@@ -1,0 +1,12 @@
+# Personal hub manifest — copy to ~/.config/agent-hub/manifest.yaml
+# This file lives in YOUR private hub, not in the agent-sync tool repo.
+
+version: 1
+name: my-agent-hub
+
+# Skills to sync (folder names under skills/)
+skills:
+  - hello-sync
+
+# Optional: path to a primary rule file (all rules/*.md are injected)
+# rules_entry: rules/example-rule.md

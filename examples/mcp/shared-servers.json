@@ -1,0 +1,10 @@
+{
+  "_comment": "Example shared MCP list. Use ${ENV_VAR} placeholders for secrets/paths. agent-sync fills them from existing local tool configs when present. Keep real secrets only in your private hub or local tool configs — never commit tokens to a public repo.",
+  "mcpServers": {
+    "sequential-thinking": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    }
+  }
+}

@@ -1,0 +1,171 @@
+#!/bin/bash
+# agent-sync — Cross-tool Agent Skills / MCP / rules synchronizer
+#
+# This is the TOOL only. Your personal configs live in a separate hub directory
+# (default: ~/.config/agent-hub), not in this repository.
+#
+# Usage:
+#   agent-sync skills|mcp|rules|all|list|verify|test|status|bench|push|help
+#
+# Environment:
+#   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
+#   AGENT_SYNC_HOME  Install location of this tool (auto-detected)
+
+set -euo pipefail
+
+# Resolve symlinks so ~/.local/bin/agent-sync finds the real package root
+_resolve() {
+    local target="$1"
+    local dir
+    while [ -L "$target" ]; do
+        dir="$(cd "$(dirname "$target")" && pwd)"
+        target="$(readlink "$target")"
+        case "$target" in
+            /*) ;;
+            *) target="$dir/$target" ;;
+        esac
+    done
+    echo "$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+}
+
+_BIN="$(_resolve "$0")"
+export AGENT_SYNC_HOME="$(cd "$(dirname "$_BIN")/.." && pwd)"
+export AGENT_HUB_ROOT="${AGENT_HUB_ROOT:-$HOME/.config/agent-hub}"
+SCRIPTS="$AGENT_SYNC_HOME/scripts"
+HUB="$AGENT_HUB_ROOT"
+
+usage() {
+    cat <<EOF
+agent-sync — sync Agent Skills, MCP servers, and rules across AI tools
+
+Commands:
+  skills [--force]   Symlink whitelist skills from hub to all tools
+  mcp                Merge shared MCP into tool configs (keeps tool-only servers)
+  rules              Inject rule blocks into CLAUDE/AGENTS/GEMINI/Copilot
+  all [--force]      skills + mcp + rules + verify
+  list               Show whitelist and coverage matrix
+  verify             Structural checks
+  test               Full evaluation suite
+  status             Status overview
+  bench              Symlink vs rsync comparison
+  init               Create a minimal personal hub from examples
+  push [-m msg]      Commit & push the personal hub (if it is a git repo)
+
+Environment:
+  AGENT_HUB_ROOT     Personal hub path (default: ~/.config/agent-hub)
+  AGENT_SYNC_HOME    Tool install path (default: auto)
+
+Personal configs (skills, MCP secrets, rules) belong in AGENT_HUB_ROOT.
+This package only contains the synchronizer — no personal data.
+EOF
+    exit "${1:-0}"
+}
+
+require_hub() {
+    if [ ! -d "$HUB" ]; then
+        echo "Personal hub not found: $HUB" >&2
+        echo "Run: agent-sync init" >&2
+        echo "Or set AGENT_HUB_ROOT to your private config directory." >&2
+        exit 1
+    fi
+    if [ ! -f "$HUB/manifest.yaml" ]; then
+        echo "Missing manifest.yaml in $HUB" >&2
+        echo "Copy examples from: $AGENT_SYNC_HOME/examples/" >&2
+        exit 1
+    fi
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+    skills)
+        require_hub
+        bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
+        ;;
+    mcp)
+        require_hub
+        bash "$SCRIPTS/sync-mcp.sh"
+        ;;
+    rules)
+        require_hub
+        bash "$SCRIPTS/sync-rules.sh"
+        ;;
+    all)
+        require_hub
+        bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
+        bash "$SCRIPTS/sync-mcp.sh"
+        bash "$SCRIPTS/sync-rules.sh"
+        bash "$SCRIPTS/verify-all.sh"
+        ;;
+    list)
+        require_hub
+        bash "$SCRIPTS/list-sync.sh"
+        ;;
+    verify)
+        require_hub
+        bash "$SCRIPTS/verify-all.sh"
+        ;;
+    test)
+        require_hub
+        bash "$SCRIPTS/test-suite.sh"
+        ;;
+    bench)
+        require_hub
+        bash "$SCRIPTS/bench-sync.sh"
+        ;;
+    init)
+        if [ -d "$HUB" ] && [ -f "$HUB/manifest.yaml" ]; then
+            echo "Hub already exists: $HUB"
+            exit 0
+        fi
+        mkdir -p "$HUB"
+        cp -R "$AGENT_SYNC_HOME/examples/." "$HUB/"
+        echo "Created personal hub at: $HUB"
+        echo "Edit manifest.yaml, mcp/shared-servers.json, skills/, rules/ — then run: agent-sync all"
+        ;;
+    push)
+        require_hub
+        MSG="hub sync"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -m) MSG="$2"; shift 2 ;;
+                *) echo "Unknown: $1"; usage 1 ;;
+            esac
+        done
+        cd "$HUB"
+        if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "Hub is not a git repository: $HUB" >&2
+            exit 1
+        fi
+        git add -A
+        if git diff --cached --quiet; then
+            echo "Nothing to commit"
+        else
+            git commit -m "$MSG"
+        fi
+        if git remote get-url origin &>/dev/null; then
+            git push origin HEAD
+            echo "Pushed to $(git remote get-url origin)"
+        else
+            echo "No git remote configured for hub."
+        fi
+        ;;
+    status)
+        echo "━━━ agent-sync status ━━━"
+        echo "Tool:  $AGENT_SYNC_HOME"
+        echo "Hub:   $HUB"
+        if [ -f "$HUB/manifest.yaml" ]; then
+            bash "$SCRIPTS/list-sync.sh"
+        else
+            echo "Hub not initialized. Run: agent-sync init"
+        fi
+        ;;
+    ""|-h|--help|help)
+        usage 0
+        ;;
+    *)
+        echo "Unknown command: $cmd" >&2
+        usage 1
+        ;;
+esac
