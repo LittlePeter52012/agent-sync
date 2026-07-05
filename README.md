@@ -59,7 +59,30 @@ agent-sync list          # coverage matrix
 agent-sync verify
 agent-sync test
 agent-sync status
+agent-sync update        # pull latest agent-sync tool from GitHub
+agent-sync update --sync # update tool + re-sync hub to all AI tools
+agent-sync update --hub  # also pull personal hub
+agent-sync pull          # pull personal hub only
+agent-sync audit         # privacy audit (tokens, PII, repo visibility)
 agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
+```
+
+### Auto-update (optional)
+
+Skills use **symlinks** — editing files in your hub updates all tools instantly (no re-sync).
+
+For the **tool itself** and **hub git backup**:
+
+```bash
+agent-sync update          # pull tool updates (--ff-only, safe)
+agent-sync update --sync   # pull + re-run skills/mcp/rules
+```
+
+Optional in `manifest.yaml` (opt-in):
+
+```yaml
+auto_update_check: true   # check once/day when you run agent-sync all
+auto_update_apply: false  # set true to auto-pull (default off for safety)
 ```
 
 Environment:

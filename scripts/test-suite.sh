@@ -122,15 +122,27 @@ else
   ok "tool package has no token patterns"
 fi
 if grep -RInE '/Users/[^/{]|OneDrive-个人|DoctorTANG' \
-  "$SYNC_HOME/bin" "$SYNC_HOME/scripts" "$SYNC_HOME/examples" "$SYNC_HOME"/README.md 2>/dev/null \
-  | grep -v 'test-suite.sh' | head -5 | grep -q .; then
+  "$SYNC_HOME/bin" "$SYNC_HOME/scripts" "$SYNC_HOME/examples" "$SYNC_HOME"/README.md "$SYNC_HOME"/VERSION 2>/dev/null \
+  | grep -v 'test-suite.sh' | grep -v 'privacy-audit.sh' | head -5 | grep -q .; then
   bad "tool package contains personal paths"
 else
   ok "tool package has no personal paths"
 fi
 
 echo ""
-echo "[6] Idempotency"
+echo "[6] Update & version"
+if [ -f "$SYNC_HOME/VERSION" ]; then ok "VERSION file exists"; else bad "VERSION file exists"; fi
+if bash "$SCRIPT_DIR/update-tool.sh" --check >/dev/null 2>&1; then
+  ok "update --check runs"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then ok "update --check runs (updates available)"
+  else bad "update --check runs"; fi
+fi
+if bash "$SCRIPT_DIR/privacy-audit.sh" >/dev/null 2>&1; then ok "privacy audit passes"; else bad "privacy audit passes"; fi
+
+echo ""
+echo "[7] Idempotency"
 if agent-sync all >/tmp/agent-sync-retest.log 2>&1; then ok "second agent-sync all"; else bad "second agent-sync all"; fi
 if agent-sync verify >/dev/null 2>&1; then ok "verify still passes"; else bad "verify still passes"; fi
 
