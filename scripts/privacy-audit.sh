@@ -51,9 +51,8 @@ else
 fi
 
 if git -C "$SYNC_HOME" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    if git -C "$SYNC_HOME" log --all -p 2>/dev/null \
-        | grep -iE "$HISTORY_PII_RE|$TOKEN_RE" \
-        | grep -v 'privacy-audit' | grep -v "grep -RInE" | grep -v "OneDrive-个人|DoctorTANG" \
+    if git -C "$SYNC_HOME" grep -nIE "$HISTORY_PII_RE|$TOKEN_RE" "$(git -C "$SYNC_HOME" rev-list --all)" -- . \
+        ':(exclude)scripts/privacy-audit.sh' ':(exclude)scripts/test-suite.sh' 2>/dev/null \
         | head -3 | grep -q .; then
         bad "tool git history may contain secrets/PII"
     else

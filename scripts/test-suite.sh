@@ -111,6 +111,37 @@ else
   ok "no shared MCP in hub (skip)"
 fi
 
+TMP_MCP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/agent-sync-mcp.XXXXXX")
+trap 'rm -rf "$TMP_MCP_DIR"' EXIT
+cat > "$TMP_MCP_DIR/shared.json" <<'JSON'
+{
+  "mcpServers": {
+    "miro-mcp": {
+      "type": "http",
+      "url": "https://mcp.miro.com"
+    }
+  }
+}
+JSON
+if "$PY" "$SCRIPT_DIR/merge-mcp.py" "$TMP_MCP_DIR/shared.json" "$TMP_MCP_DIR/cursor.json" >/dev/null \
+  && grep -q '"url": "https://mcp.miro.com"' "$TMP_MCP_DIR/cursor.json"; then
+  ok "HTTP MCP merges into JSON tools"
+else
+  bad "HTTP MCP merges into JSON tools"
+fi
+if "$PY" "$SCRIPT_DIR/merge-mcp-codex.py" "$TMP_MCP_DIR/shared.json" "$TMP_MCP_DIR/config.toml" >/dev/null \
+  && grep -q 'url = "https://mcp.miro.com"' "$TMP_MCP_DIR/config.toml"; then
+  ok "HTTP MCP merges into Codex"
+else
+  bad "HTTP MCP merges into Codex"
+fi
+if CLAUDE_BIN=claude "$PY" "$SCRIPT_DIR/sync-mcp-claude.py" "$TMP_MCP_DIR/shared.json" --dry-run \
+  | grep -q "claude mcp add --scope user --transport http miro-mcp https://mcp.miro.com"; then
+  ok "HTTP MCP maps to Claude CLI"
+else
+  bad "HTTP MCP maps to Claude CLI"
+fi
+
 echo ""
 echo "[5] Tool package privacy (agent-sync repo must stay clean)"
 # Only scan the TOOL package, never the personal hub

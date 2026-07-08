@@ -107,6 +107,23 @@ skills:
   - my-skill
 ```
 
+`mcp/shared-servers.json` can contain local stdio servers and remote HTTP
+servers:
+
+```json
+{
+  "mcpServers": {
+    "miro-mcp": {
+      "type": "http",
+      "url": "https://mcp.miro.com"
+    }
+  }
+}
+```
+
+For Claude Code, `agent-sync mcp` uses the official `claude mcp add` CLI with
+user scope instead of editing Claude's private config files directly.
+
 ## Secrets
 
 - Put **placeholders** like `${MINERU_API_TOKEN}` in `mcp/shared-servers.json`.
