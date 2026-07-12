@@ -214,6 +214,29 @@ case "$cmd" in
     doctor)
         exec python3 "$SCRIPTS/agent-doctor.py" "$@"
         ;;
+    fix)
+        require_hub
+        dry_run=false
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --dry-run) dry_run=true; shift ;;
+                *) echo "Unknown fix option: $1" >&2; usage 1 ;;
+            esac
+        done
+        if $dry_run; then
+            echo "━━━ agent-sync fix (dry run) ━━━"
+            echo "  would sync skills from the hub whitelist"
+            echo "  would sync missing shared MCP entries without replacing local overrides"
+            echo "  would deduplicate synced rules and inject one managed copy"
+            echo "  would run agent-sync doctor"
+            exit 0
+        fi
+        echo "━━━ agent-sync fix ━━━"
+        bash "$SCRIPTS/sync-skills.sh" --method=symlink
+        bash "$SCRIPTS/sync-mcp.sh"
+        bash "$SCRIPTS/sync-rules.sh"
+        exec python3 "$SCRIPTS/agent-doctor.py"
+        ;;
     ""|-h|--help|help)
         usage 0
         ;;

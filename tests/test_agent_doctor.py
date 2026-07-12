@@ -12,6 +12,7 @@ DOCTOR = REPO / "scripts" / "agent-doctor.py"
 ENTRYPOINT = REPO / "bin" / "agent-sync"
 SYNC_RULES = REPO / "scripts" / "sync-rules.sh"
 LIST_SYNC = REPO / "scripts" / "list-sync.sh"
+SYNC_CLAUDE_MCP = REPO / "scripts" / "sync-mcp-claude.py"
 
 
 class AgentDoctorTests(unittest.TestCase):
@@ -99,6 +100,40 @@ class AgentDoctorTests(unittest.TestCase):
         result = subprocess.run(["bash", str(LIST_SYNC)], env=env, check=True, capture_output=True, text=True)
 
         self.assertRegex(result.stdout, re.compile(r"^Claude\s+—\s+0/1$", re.M))
+
+    def test_fix_dry_run_describes_repairs_without_writing(self):
+        target = self.home / ".codex" / "AGENTS.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("unchanged\n")
+        before = target.read_text()
+        env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
+        result = subprocess.run(
+            [str(ENTRYPOINT), "fix", "--dry-run"],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        self.assertIn("sync skills", result.stdout)
+        self.assertIn("deduplicate synced rules", result.stdout)
+        self.assertEqual(target.read_text(), before)
+
+    def test_claude_mcp_sync_resolves_shared_placeholder_from_cursor(self):
+        cursor = self.home / ".cursor"
+        cursor.mkdir()
+        (cursor / "mcp.json").write_text(json.dumps({"mcpServers": {"shared": {"command": "shared-mcp", "env": {"OPENAPI_MCP_HEADERS": "donor-value"}}}}))
+        canonical = self.tempdir.name + "/shared.json"
+        Path(canonical).write_text(json.dumps({"mcpServers": {"shared": {"command": "shared-mcp", "env": {"OPENAPI_MCP_HEADERS": "${ANYTYPE_MCP_HEADERS}"}}}}))
+        log = Path(self.tempdir.name) / "claude.log"
+        fake_claude = Path(self.tempdir.name) / "claude"
+        fake_claude.write_text(f'#!/bin/sh\n[ "$3" = "list" ] && exit 0\nprintf "%s\\n" "$*" > "{log}"\n')
+        fake_claude.chmod(0o755)
+        env = os.environ | {"HOME": str(self.home), "CLAUDE_BIN": str(fake_claude)}
+        subprocess.run(["python3", str(SYNC_CLAUDE_MCP), canonical], env=env, check=True, capture_output=True, text=True)
+
+        self.assertIn("OPENAPI_MCP_HEADERS=donor-value", log.read_text())
 
 
 if __name__ == "__main__":

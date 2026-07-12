@@ -59,6 +59,10 @@ agent-sync list          # coverage matrix
 agent-sync verify
 agent-sync test
 agent-sync status
+agent-sync doctor        # local agent capabilities and sync-health report
+agent-sync doctor --json # same report as safe, machine-readable JSON
+agent-sync fix --dry-run # preview safe local repairs without writing
+agent-sync fix           # sync missing coverage and normalize synced rules
 agent-sync update        # pull latest agent-sync tool from GitHub
 agent-sync update --sync # update tool + re-sync hub to all AI tools
 agent-sync update --hub  # also pull personal hub
@@ -66,6 +70,13 @@ agent-sync pull          # pull personal hub only
 agent-sync audit         # privacy audit (tokens, PII, repo visibility)
 agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
 ```
+
+`doctor` is local and read-only. It reports installed agent surfaces, configured
+model/provider names, skill and shared-MCP coverage, and duplicate synced rules.
+It never prints MCP values, tokens, paths from private configuration, cookies,
+or account/subscription information. `fix` is intentionally narrow: it repairs
+missing sync coverage and duplicate managed rule blocks, while preserving any
+existing local MCP override.
 
 ### Auto-update (optional)
 
