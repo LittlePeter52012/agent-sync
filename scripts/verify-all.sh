@@ -41,6 +41,7 @@ echo "[mcp]"
 if [ -f "$HUB_ROOT/mcp/shared-servers.json" ]; then
     check "Antigravity mcp file" test -f "$HOME/.gemini/config/mcp_config.json"
     check "Cursor mcp file" test -f "$HOME/.cursor/mcp.json"
+    check "Claude mcp file" test -f "$HOME/.claude.json"
     check "VSCode/Copilot mcp file" test -f "$HOME/Library/Application Support/Code/User/mcp.json"
     check "OpenCode config" test -f "$HOME/.config/opencode/opencode.json"
     check "Codex config" test -f "$HOME/.codex/config.toml"

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 DOCTOR = REPO / "scripts" / "agent-doctor.py"
 ENTRYPOINT = REPO / "bin" / "agent-sync"
+SYNC_RULES = REPO / "scripts" / "sync-rules.sh"
+LIST_SYNC = REPO / "scripts" / "list-sync.sh"
 
 
 class AgentDoctorTests(unittest.TestCase):
@@ -75,6 +78,27 @@ class AgentDoctorTests(unittest.TestCase):
         )
 
         self.assertEqual(json.loads(result.stdout)["agents"][0]["name"], "Codex / ChatGPT")
+
+    def test_rule_sync_deduplicates_legacy_rule_copies(self):
+        rule = "[Agent Sync Disambiguation Rule]\nUse agent-sync.\n"
+        rules = self.hub / "rules"
+        rules.mkdir()
+        (rules / "agent-sync-disambiguation.md").write_text(rule)
+        for relative in (".codex/AGENTS.md", ".claude/CLAUDE.md", ".gemini/GEMINI.md"):
+            target = self.home / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(rule * 3)
+        env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
+        subprocess.run(["bash", str(SYNC_RULES)], env=env, check=True, capture_output=True, text=True)
+
+        target = self.home / ".codex" / "AGENTS.md"
+        self.assertEqual(target.read_text().count(rule.strip()), 1)
+
+    def test_list_sync_reports_claude_mcp_coverage(self):
+        env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
+        result = subprocess.run(["bash", str(LIST_SYNC)], env=env, check=True, capture_output=True, text=True)
+
+        self.assertRegex(result.stdout, re.compile(r"^Claude\s+—\s+0/1$", re.M))
 
 
 if __name__ == "__main__":
