@@ -351,7 +351,7 @@ git status -sb
 - [ ] **步骤 5：推送公开分支、合并并更新本机 main**
 
 推送 `agent/source-sync`，创建或更新 PR，确认隐私审计与测试结果后合并到 `main`。
-随后将 `/Users/slavatang/.local/share/agent-sync` 快进到远端 `main`，再运行一次
+随后将 `~/.local/share/agent-sync` 快进到远端 `main`，再运行一次
 `agent-sync doctor`。
 
 - [ ] **步骤 6：更新私人 Hub**

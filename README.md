@@ -22,14 +22,73 @@ git clone https://github.com/LittlePeter52012/agent-sync.git ~/.local/share/agen
 ln -sf ~/.local/share/agent-sync/bin/agent-sync ~/.local/bin/agent-sync
 ```
 
-Create your private hub (once):
+## Quick start
+
+If one Agent tool is already configured the way you want, adopt it and sync
+everything in one command:
+
+```bash
+agent-sync sync --from vscode
+```
+
+Supported sources are `vscode`, `cursor`, `antigravity`, `opencode`, `codex`,
+and `claude`. The command shows added, changed, removed, and unchanged MCP names
+before asking for confirmation. It creates a minimal private Hub automatically
+on first use, then distributes Skills, MCP servers, and Rules to all supported
+tools.
+
+If you prefer to build the private Hub directly:
 
 ```bash
 agent-sync init
 # edit ~/.config/agent-hub/ ...
-agent-sync all
-agent-sync test
+agent-sync sync
 ```
+
+## How synchronization works
+
+```mermaid
+flowchart TB
+    SOURCE["1 · Choose the Agent that already works<br/>VS Code · Cursor · Codex · OpenCode · Claude · Antigravity"]
+    PROMOTE["2 · agent-sync sync --from TOOL<br/>Preview changes → Confirm once"]
+    HUB[("3 · Private Agent Hub<br/>Skills · MCP · Rules<br/>Single source of truth")]
+    SYNC["4 · agent-sync sync<br/>Distribute and convert for every tool"]
+    TARGETS["Claude · Codex / ChatGPT · Cursor<br/>Gemini / Antigravity · OpenCode · VS Code / Copilot"]
+    CHECK{"5 · agent-sync doctor<br/>Is everything healthy?"}
+    READY["Ready to use<br/>The same shared capabilities everywhere"]
+    FIX["agent-sync fix<br/>Repair → Re-sync → Verify"]
+    GH[("Optional private GitHub backup<br/>agent-sync push / pull")]
+
+    SOURCE --> PROMOTE --> HUB --> SYNC --> TARGETS --> CHECK
+    CHECK -->|"Yes"| READY
+    CHECK -->|"Issue found"| FIX
+    FIX --> SYNC
+    HUB -. "private backup" .-> GH
+
+    classDef source fill:#eef2ff,stroke:#6366f1,color:#1e1b4b,stroke-width:1.5px;
+    classDef action fill:#ecfeff,stroke:#0891b2,color:#164e63,stroke-width:2px;
+    classDef hub fill:#fff7ed,stroke:#f97316,color:#7c2d12,stroke-width:2.5px;
+    classDef target fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1.5px;
+    classDef check fill:#fdf4ff,stroke:#c026d3,color:#701a75,stroke-width:2px;
+
+    class SOURCE source;
+    class PROMOTE,SYNC,FIX action;
+    class HUB,GH hub;
+    class TARGETS,READY target;
+    class CHECK check;
+```
+
+There are only three normal workflows:
+
+```bash
+agent-sync sync                         # Hub → every Agent
+agent-sync sync --from vscode           # VS Code → Hub → every Agent
+agent-sync fix                          # repair deterministic issues and verify
+```
+
+Use `--dry-run` to preview a source promotion without writing, or `--yes` for
+intentional non-interactive use. `agent-sync all` remains an alias for the
+original full Hub-to-tools workflow.
 
 ## Two-layer model
 
@@ -51,7 +110,10 @@ agent-sync test
 
 ```bash
 agent-sync init          # create hub from examples/
-agent-sync all           # skills + mcp + rules + verify
+agent-sync sync          # Hub → skills + MCP + rules + verify
+agent-sync sync --from vscode --dry-run
+agent-sync sync --from vscode # VS Code → Hub → all tools
+agent-sync all           # backward-compatible alias for full Hub sync
 agent-sync skills        # symlink whitelist skills
 agent-sync mcp           # merge shared MCP (keeps tool-only servers)
 agent-sync rules         # inject rules/*.md
@@ -75,17 +137,33 @@ agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
 model/provider names, skill and shared-MCP coverage, and duplicate synced rules.
 It never prints MCP values, tokens, paths from private configuration, cookies,
 or account/subscription information. `fix` is intentionally narrow: it repairs
-missing sync coverage and duplicate managed rule blocks, while preserving any
-existing local MCP override.
+missing sync coverage, removes retired Hub-managed MCP names, and normalizes
+managed rule blocks. Tool-only MCP servers remain untouched. For shared MCP
+names, Hub command, URL, transport, and normal arguments are authoritative;
+existing local secrets and machine-specific absolute paths are preserved.
 
 For VS Code, `agent-sync mcp` merges shared MCP servers into the default user
 configuration and every existing VS Code Profile. Profile-specific MCP files
 are separate in current VS Code releases, so `agent-sync doctor` reports each
 Profile's coverage individually.
 
+### Adopting a configuration from an Agent
+
+`sync --from` promotes only MCP configuration. Shared Skills are symlinks to
+the private Hub already, while Rules stay Hub-owned so tool-specific prompts do
+not accidentally spread everywhere.
+
+The selected source becomes authoritative for the shared MCP set. Missing old
+shared names are recorded in `mcp/retired-servers.json` and safely removed from
+other tools on the next `sync`; servers that were never Hub-managed remain
+local. An empty, unreadable, or ambiguous source is rejected before any write.
+VS Code automatically selects its only non-builtin MCP Profile; when several
+Profiles qualify, choose one explicitly with `vscode:<profile-id>`.
+
 ### Auto-update (optional)
 
-Skills use **symlinks** — editing files in your hub updates all tools instantly (no re-sync).
+Skills use **symlinks** — editing a shared Skill from any linked tool updates
+the Hub-backed file immediately.
 
 For the **tool itself** and **hub git backup**:
 
@@ -140,10 +218,18 @@ servers:
 For Claude Code, `agent-sync mcp` uses the official `claude mcp add` CLI with
 user scope instead of editing Claude's private config files directly.
 
+Normal `sync` does not silently pull or push GitHub. To back up your private Hub:
+
+```bash
+agent-sync push -m "promote preferred MCP configuration"
+```
+
+On another machine, run `agent-sync pull` followed by `agent-sync sync`.
+
 ## Secrets
 
 - Put **placeholders** like `${MINERU_API_TOKEN}` in `mcp/shared-servers.json`.
-- On merge, agent-sync fills values from **existing local** Cursor/Antigravity MCP configs.
+- On merge, agent-sync resolves values from the process environment or existing local Agent configs.
 - Never commit real tokens to a **public** repository.
 - Your **private** hub may contain secrets if you accept that risk; prefer placeholders + local donors.
 

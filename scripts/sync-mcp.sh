@@ -55,4 +55,4 @@ echo "[mcp] → Claude Code (claude mcp, user scope)"
 python3 "$MERGE_CLAUDE" "$CANONICAL" --retired "$RETIRED"
 
 echo ""
-echo "  Codex: append-only for missing shared servers."
+echo "  Shared MCP structure converged; local secrets and tool-only servers preserved."
