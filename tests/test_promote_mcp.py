@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ MERGE = REPO / "scripts" / "merge-mcp.py"
 MERGE_CODEX = REPO / "scripts" / "merge-mcp-codex.py"
 SYNC_CLAUDE = REPO / "scripts" / "sync-mcp-claude.py"
 SYNC_MCP = REPO / "scripts" / "sync-mcp.sh"
+ENTRYPOINT = REPO / "bin" / "agent-sync"
 
 
 class PromoteMcpTests(unittest.TestCase):
@@ -64,6 +66,50 @@ class PromoteMcpTests(unittest.TestCase):
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
         return subprocess.run(
             ["python3", str(PROMOTE), "--source", "vscode", "--hub", str(self.hub), *args],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+    def run_promote_source(
+        self, source: str, *args: str
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
+        return subprocess.run(
+            [
+                "python3",
+                str(PROMOTE),
+                "--source",
+                source,
+                "--hub",
+                str(self.hub),
+                *args,
+            ],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+    def run_agent_sync(
+        self, *args: str, hub: Optional[Path] = None
+    ) -> subprocess.CompletedProcess[str]:
+        selected_hub = hub or self.hub
+        fake_claude = Path(self.tempdir.name) / "cli-claude"
+        fake_claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_claude.chmod(0o755)
+        claude_config = self.home / ".claude.json"
+        if not claude_config.exists():
+            claude_config.parent.mkdir(parents=True, exist_ok=True)
+            claude_config.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(selected_hub),
+            "CLAUDE_BIN": str(fake_claude),
+        }
+        return subprocess.run(
+            [str(ENTRYPOINT), *args],
             cwd=REPO,
             env=env,
             text=True,
@@ -345,6 +391,78 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertNotIn("old-shared", servers)
         self.assertIn("tool-only", servers)
         self.assertIn("shared", servers)
+
+    def test_sync_from_runs_promotion_then_full_distribution(self):
+        self.write_vscode_profile(
+            "paper", {"shared": {"command": "new-command", "args": ["--new"]}}
+        )
+
+        result = self.run_agent_sync("sync", "--from", "vscode", "--yes")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        canonical = json.loads(self.canonical.read_text())["mcpServers"]
+        self.assertEqual(canonical["shared"]["command"], "new-command")
+        cursor = json.loads((self.home / ".cursor" / "mcp.json").read_text())["mcpServers"]
+        self.assertEqual(cursor["shared"]["command"], "new-command")
+        self.assertIn("Agent Sync Doctor", result.stdout)
+
+    def test_sync_from_bootstraps_minimal_hub(self):
+        self.write_vscode_profile("paper", {"shared": {"command": "working-command"}})
+        fresh_hub = Path(self.tempdir.name) / "fresh-hub"
+
+        result = self.run_agent_sync(
+            "sync", "--from", "vscode", "--yes", hub=fresh_hub
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((fresh_hub / "manifest.yaml").exists())
+        self.assertIn("skills: []", (fresh_hub / "manifest.yaml").read_text())
+        self.assertFalse((fresh_hub / "skills" / "hello-sync").exists())
+        servers = json.loads((fresh_hub / "mcp" / "shared-servers.json").read_text())
+        self.assertIn("shared", servers["mcpServers"])
+
+    def test_sync_dry_run_does_not_distribute_or_change_hub(self):
+        self.write_vscode_profile("paper", {"new-server": {"command": "new-command"}})
+        before = self.canonical.read_bytes()
+
+        result = self.run_agent_sync("sync", "--from", "vscode", "--dry-run")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.canonical.read_bytes(), before)
+        self.assertFalse((self.home / ".cursor" / "mcp.json").exists())
+
+    def test_unknown_sync_source_fails_without_writing(self):
+        before = self.canonical.read_bytes()
+
+        result = self.run_agent_sync("sync", "--from", "unknown", "--yes")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.canonical.read_bytes(), before)
+
+    def test_codex_can_be_used_as_source_with_system_python(self):
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            '[mcp_servers.shared]\ncommand = "codex-command"\nargs = ["--codex"]\n\n'
+            '[mcp_servers.shared.env]\nTOKEN = "local-secret"\n',
+            encoding="utf-8",
+        )
+
+        result = self.run_promote_source("codex", "--yes")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shared = json.loads(self.canonical.read_text())["mcpServers"]["shared"]
+        self.assertEqual(shared["command"], "codex-command")
+        self.assertEqual(shared["args"], ["--codex"])
+        self.assertEqual(shared["env"]["TOKEN"], "${TOKEN}")
+
+    def test_sync_uses_existing_hub_as_source_of_truth(self):
+        result = self.run_agent_sync("sync")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cursor = json.loads((self.home / ".cursor" / "mcp.json").read_text())["mcpServers"]
+        self.assertIn("shared", cursor)
+        self.assertIn("retire-me", cursor)
 
 
 if __name__ == "__main__":

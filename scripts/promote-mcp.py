@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import parse_qsl, urlsplit
 
 try:
@@ -23,6 +24,9 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.11+ is expected
 
 PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 SECRET_QUERY_KEYS = ("token", "secret", "password", "key", "auth")
+CODEX_TABLE_RE = re.compile(
+    r"^\s*\[mcp_servers\.([^\.\]\s]+)(?:\.(env|headers|http_headers))?\]\s*$"
+)
 
 
 class PromotionError(Exception):
@@ -123,18 +127,49 @@ def normalize_server(kind: str, cfg: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def parse_codex_servers(text: str) -> dict[str, dict[str, Any]]:
+    servers: dict[str, dict[str, Any]] = {}
+    current: Optional[dict[str, Any]] = None
+    section: Optional[str] = None
+    for line in text.splitlines():
+        table = CODEX_TABLE_RE.match(line)
+        if table:
+            name, section = table.groups()
+            current = servers.setdefault(name, {})
+            if section:
+                normalized_section = "headers" if section == "http_headers" else section
+                section = normalized_section
+                current.setdefault(section, {})
+            continue
+        if current is None or "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, raw = line.split("=", 1)
+        try:
+            value = ast.literal_eval(raw.strip())
+        except (SyntaxError, ValueError):
+            value = raw.strip()
+        if section:
+            current[section][key.strip()] = value
+        else:
+            current[key.strip()] = value
+    return servers
+
+
 def load_source(source: str, home: Path) -> tuple[str, dict[str, dict[str, Any]]]:
     label, path, kind = locate_source(source, home)
     if kind == "codex":
-        if tomllib is None:
-            raise PromotionError("Python tomllib is required for Codex source promotion")
         try:
-            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
             raise PromotionError(f"Source configuration not found: {path}") from exc
-        except Exception as exc:
-            raise PromotionError("Source Codex configuration is invalid TOML") from exc
-        raw = data.get("mcp_servers", {})
+        if tomllib is None:
+            raw = parse_codex_servers(text)
+        else:
+            try:
+                data = tomllib.loads(text)
+            except Exception as exc:
+                raise PromotionError("Source Codex configuration is invalid TOML") from exc
+            raw = data.get("mcp_servers", {})
     else:
         data = load_json(path)
         bucket = {"vscode": "servers", "opencode": "mcp"}.get(kind, "mcpServers")

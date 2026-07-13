@@ -23,18 +23,26 @@ echo "  Hub: $HUB_ROOT"
 echo ""
 
 SKILLS=()
+SKILL_COUNT=0
 while IFS= read -r s; do
-    [ -n "$s" ] && SKILLS+=("$s")
+    if [ -n "$s" ]; then
+        SKILLS+=("$s")
+        SKILL_COUNT=$((SKILL_COUNT + 1))
+    fi
 done < <(read_skill_list)
 
 echo "[skills]"
-for skill in "${SKILLS[@]}"; do
-    check "$skill @ hub" test -f "$HUB_ROOT/skills/$skill/SKILL.md"
-    while IFS= read -r base; do
-        label=$(basename "$(dirname "$base")")/$(basename "$base")
-        check "$skill @ $base" test -f "$base/$skill/SKILL.md"
-    done < <(skill_targets)
-done
+if [ "$SKILL_COUNT" -eq 0 ]; then
+    echo "  (no shared Skills — skip)"
+else
+    for skill in "${SKILLS[@]}"; do
+        check "$skill @ hub" test -f "$HUB_ROOT/skills/$skill/SKILL.md"
+        while IFS= read -r base; do
+            label=$(basename "$(dirname "$base")")/$(basename "$base")
+            check "$skill @ $base" test -f "$base/$skill/SKILL.md"
+        done < <(skill_targets)
+    done
+fi
 
 echo ""
 echo "[mcp]"

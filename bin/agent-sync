@@ -5,7 +5,7 @@
 # (default: ~/.config/agent-hub), not in this repository.
 #
 # Usage:
-#   agent-sync skills|mcp|rules|all|list|verify|test|status|doctor|fix|bench|update|push|help
+#   agent-sync sync|skills|mcp|rules|all|list|verify|test|status|doctor|fix|bench|update|push|help
 #
 # Environment:
 #   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
@@ -39,6 +39,8 @@ usage() {
 agent-sync — sync Agent Skills, MCP servers, and rules across AI tools
 
 Commands:
+  sync [--from TOOL] [--dry-run|--yes]
+                     Hub → all tools, or TOOL → Hub → all tools
   skills [--force]   Symlink whitelist skills from hub to all tools
   mcp                Merge shared MCP into tool configs (keeps tool-only servers)
   rules              Inject rule blocks into CLAUDE/AGENTS/GEMINI/Copilot
@@ -102,10 +104,51 @@ require_hub() {
     fi
 }
 
+run_full_sync() {
+    bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
+    bash "$SCRIPTS/sync-mcp.sh"
+    bash "$SCRIPTS/sync-rules.sh"
+    bash "$SCRIPTS/verify-all.sh"
+}
+
 cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+    sync)
+        SOURCE=""
+        DRY_RUN=false
+        ASSUME_YES=false
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --from)
+                    [ $# -ge 2 ] || { echo "--from requires a tool name" >&2; exit 1; }
+                    SOURCE="$2"
+                    shift 2
+                    ;;
+                --dry-run) DRY_RUN=true; shift ;;
+                --yes) ASSUME_YES=true; shift ;;
+                *) echo "Unknown sync option: $1" >&2; usage 1 ;;
+            esac
+        done
+        if [ -z "$SOURCE" ]; then
+            if $DRY_RUN || $ASSUME_YES; then
+                echo "--dry-run and --yes require --from" >&2
+                exit 1
+            fi
+            require_hub
+            run_full_sync
+            exit 0
+        fi
+        PROMOTE_ARGS=(--source "$SOURCE" --hub "$HUB")
+        $DRY_RUN && PROMOTE_ARGS+=(--dry-run)
+        $ASSUME_YES && PROMOTE_ARGS+=(--yes)
+        python3 "$SCRIPTS/promote-mcp.py" "${PROMOTE_ARGS[@]}"
+        $DRY_RUN && exit 0
+        require_hub
+        run_full_sync
+        exec python3 "$SCRIPTS/agent-doctor.py"
+        ;;
     skills)
         require_hub
         bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
@@ -121,10 +164,7 @@ case "$cmd" in
     all)
         require_hub
         maybe_auto_update
-        bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
-        bash "$SCRIPTS/sync-mcp.sh"
-        bash "$SCRIPTS/sync-rules.sh"
-        bash "$SCRIPTS/verify-all.sh"
+        run_full_sync "$@"
         ;;
     list)
         require_hub
