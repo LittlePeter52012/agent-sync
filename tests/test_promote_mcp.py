@@ -15,6 +15,7 @@ MERGE_CODEX = REPO / "scripts" / "merge-mcp-codex.py"
 SYNC_CLAUDE = REPO / "scripts" / "sync-mcp-claude.py"
 SYNC_MCP = REPO / "scripts" / "sync-mcp.sh"
 ENTRYPOINT = REPO / "bin" / "agent-sync"
+VERIFY = REPO / "scripts" / "verify-all.sh"
 
 
 class PromoteMcpTests(unittest.TestCase):
@@ -97,7 +98,27 @@ class PromoteMcpTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         selected_hub = hub or self.hub
         fake_claude = Path(self.tempdir.name) / "cli-claude"
-        fake_claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_claude.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "path = Path(os.environ['HOME']) / '.claude.json'\n"
+            "data = json.loads(path.read_text()) if path.exists() else {'mcpServers': {}}\n"
+            "servers = data.setdefault('mcpServers', {})\n"
+            "args = sys.argv[1:]\n"
+            "if args[:2] == ['mcp', 'list']:\n"
+            "    [print(name + ': configured') for name in servers]\n"
+            "elif args[:2] == ['mcp', 'remove']:\n"
+            "    servers.pop(args[-1], None)\n"
+            "elif args[:2] == ['mcp', 'add']:\n"
+            "    if '--transport' in args:\n"
+            "        name = args[args.index('--transport') + 2]\n"
+            "    else:\n"
+            "        name = args[args.index('--scope') + 2]\n"
+            "    servers[name] = {'command': 'managed-by-fake-cli'}\n"
+            "path.write_text(json.dumps(data))\n",
+            encoding="utf-8",
+        )
         fake_claude.chmod(0o755)
         claude_config = self.home / ".claude.json"
         if not claude_config.exists():
@@ -107,6 +128,7 @@ class PromoteMcpTests(unittest.TestCase):
             "HOME": str(self.home),
             "AGENT_HUB_ROOT": str(selected_hub),
             "CLAUDE_BIN": str(fake_claude),
+            "TOKEN": "local-test-token",
         }
         return subprocess.run(
             [str(ENTRYPOINT), *args],
@@ -459,10 +481,52 @@ class PromoteMcpTests(unittest.TestCase):
     def test_sync_uses_existing_hub_as_source_of_truth(self):
         result = self.run_agent_sync("sync")
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         cursor = json.loads((self.home / ".cursor" / "mcp.json").read_text())["mcpServers"]
         self.assertIn("shared", cursor)
         self.assertIn("retire-me", cursor)
+
+    def test_verify_fails_when_target_file_exists_but_shared_name_is_missing(self):
+        json_targets = [
+            (self.home / ".gemini" / "config" / "mcp_config.json", "mcpServers", True),
+            (self.home / ".cursor" / "mcp.json", "mcpServers", False),
+            (self.home / ".claude.json", "mcpServers", True),
+            (
+                self.home
+                / "Library"
+                / "Application Support"
+                / "Code"
+                / "User"
+                / "mcp.json",
+                "servers",
+                True,
+            ),
+            (self.home / ".config" / "opencode" / "opencode.json", "mcp", True),
+        ]
+        for path, key, complete in json_targets:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            servers = {
+                "shared": {"command": "shared-mcp"},
+                "retire-me": {"command": "retired-command"},
+            } if complete else {}
+            path.write_text(json.dumps({key: servers}), encoding="utf-8")
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text(
+            '[mcp_servers.shared]\ncommand = "shared-mcp"\n\n'
+            '[mcp_servers.retire-me]\ncommand = "retired-command"\n',
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["bash", str(VERIFY)],
+            env=os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)},
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cursor shared MCP 0/2", result.stdout)
 
 
 if __name__ == "__main__":

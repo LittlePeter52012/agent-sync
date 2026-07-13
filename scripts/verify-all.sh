@@ -47,12 +47,62 @@ fi
 echo ""
 echo "[mcp]"
 if [ -f "$HUB_ROOT/mcp/shared-servers.json" ]; then
-    check "Antigravity mcp file" test -f "$HOME/.gemini/config/mcp_config.json"
-    check "Cursor mcp file" test -f "$HOME/.cursor/mcp.json"
-    check "Claude mcp file" test -f "$HOME/.claude.json"
-    check "VSCode/Copilot mcp file" test -f "$HOME/Library/Application Support/Code/User/mcp.json"
-    check "OpenCode config" test -f "$HOME/.config/opencode/opencode.json"
-    check "Codex config" test -f "$HOME/.codex/config.toml"
+    if "$PY" - "$HUB_ROOT" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+hub = Path(sys.argv[1])
+home = Path.home()
+shared = {
+    name.lower()
+    for name in json.loads((hub / "mcp/shared-servers.json").read_text()).get("mcpServers", {})
+}
+
+def json_names(path, key):
+    if not path.exists():
+        return set()
+    try:
+        value = json.loads(path.read_text()).get(key, {})
+    except json.JSONDecodeError:
+        return set()
+    return {name.lower() for name in value} if isinstance(value, dict) else set()
+
+def codex_names(path):
+    if not path.exists():
+        return set()
+    return {
+        match.group(1).lower()
+        for match in re.finditer(r"^\[mcp_servers\.([^\].]+)\]", path.read_text(), re.M)
+    }
+
+targets = [
+    ("Antigravity", home / ".gemini/config/mcp_config.json", "json", "mcpServers"),
+    ("Cursor", home / ".cursor/mcp.json", "json", "mcpServers"),
+    ("Claude", home / ".claude.json", "json", "mcpServers"),
+    ("VS Code", home / "Library/Application Support/Code/User/mcp.json", "json", "servers"),
+    ("OpenCode", home / ".config/opencode/opencode.json", "json", "mcp"),
+    ("Codex", home / ".codex/config.toml", "toml", ""),
+]
+profiles = home / "Library/Application Support/Code/User/profiles"
+if profiles.exists():
+    for profile in sorted(path for path in profiles.iterdir() if path.is_dir()):
+        targets.append((f"VS Code profile {profile.name}", profile / "mcp.json", "json", "servers"))
+
+failures = 0
+for label, path, kind, key in targets:
+    names = codex_names(path) if kind == "toml" else json_names(path, key)
+    count = len(names & shared)
+    marker = "✅" if count == len(shared) else "❌"
+    print(f"  {marker} {label} shared MCP {count}/{len(shared)}")
+    failures += count != len(shared)
+sys.exit(failures)
+PY
+    then
+        :
+    else
+        rc=$?
+        FAIL=$((FAIL + rc))
+    fi
 else
     echo "  (no mcp/shared-servers.json — skip)"
 fi

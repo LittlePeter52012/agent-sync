@@ -158,6 +158,29 @@ class AgentDoctorTests(unittest.TestCase):
         profile_config = json.loads((profile / "mcp.json").read_text())
         self.assertIn("shared", profile_config["servers"])
 
+    def test_doctor_reports_unresolved_placeholder_and_missing_executable_safely(self):
+        (self.hub / "mcp" / "shared-servers.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "broken": {
+                            "command": "definitely-missing-mcp-command",
+                            "env": {"TOKEN": "${MISSING_TOKEN}"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor()
+        report = json.loads(result.stdout)
+        messages = "\n".join(finding["message"] for finding in report["findings"])
+
+        self.assertIn("MISSING_TOKEN", messages)
+        self.assertIn("definitely-missing-mcp-command", messages)
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

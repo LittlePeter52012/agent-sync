@@ -14,6 +14,7 @@ from typing import Any
 
 HOME = Path.home()
 HUB = Path(os.environ.get("AGENT_HUB_ROOT", HOME / ".config" / "agent-hub"))
+PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
 def read_manifest_skills() -> list[str]:
@@ -40,6 +41,110 @@ def read_shared_mcp() -> list[str]:
         return list(json.loads(path.read_text(encoding="utf-8")).get("mcpServers", {}))
     except json.JSONDecodeError:
         return []
+
+
+def read_shared_mcp_config() -> dict[str, dict[str, Any]]:
+    path = HUB / "mcp" / "shared-servers.json"
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("mcpServers", {})
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(name): cfg
+        for name, cfg in value.items()
+        if isinstance(cfg, dict)
+    }
+
+
+def placeholder_names(value: Any) -> set[str]:
+    names: set[str] = set()
+    if isinstance(value, str):
+        match = PLACEHOLDER_RE.match(value)
+        if match:
+            names.add(match.group(1))
+    elif isinstance(value, dict):
+        for child in value.values():
+            names.update(placeholder_names(child))
+    elif isinstance(value, list):
+        for child in value:
+            names.update(placeholder_names(child))
+    return names
+
+
+def local_variable_names() -> set[str]:
+    names = set(os.environ)
+    paths = [
+        HOME / ".cursor" / "mcp.json",
+        HOME / ".gemini" / "config" / "mcp_config.json",
+        HOME / ".claude.json",
+        HOME / ".config" / "opencode" / "opencode.json",
+        HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json",
+    ]
+    profiles = HOME / "Library" / "Application Support" / "Code" / "User" / "profiles"
+    if profiles.exists():
+        paths.extend(sorted(profiles.glob("*/mcp.json")))
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(child, str) and child and not PLACEHOLDER_RE.match(child):
+                    names.add(str(key))
+                    if key == "OUTPUT_DIR":
+                        names.add("MINERU_OUTPUT_DIR")
+                    if key == "OPENAPI_MCP_HEADERS":
+                        names.add("ANYTYPE_MCP_HEADERS")
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                if isinstance(child, str) and child.startswith("/") and "obsidian" in child.lower():
+                    names.add("OBSIDIAN_VAULT")
+                visit(child)
+
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            visit(json.loads(path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            continue
+    codex = HOME / ".codex" / "config.toml"
+    if codex.exists():
+        for key, value in re.findall(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"\n]+)"', codex.read_text(encoding="utf-8"), re.M):
+            if value and not PLACEHOLDER_RE.match(value):
+                names.add(key)
+    return names
+
+
+def mcp_usability_findings() -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    resolved = local_variable_names()
+    for server_name, config in read_shared_mcp_config().items():
+        for variable in sorted(placeholder_names(config)):
+            if variable not in resolved:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": f"Unresolved Hub placeholder for {server_name}: {variable}",
+                    }
+                )
+        if config.get("type", "stdio") == "http" or config.get("url"):
+            continue
+        command = config.get("command")
+        if not isinstance(command, str) or PLACEHOLDER_RE.match(command):
+            continue
+        present = Path(command).exists() if command.startswith("/") else bool(shutil.which(command))
+        if not present:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Missing MCP executable for {server_name}: {command}",
+                }
+            )
+    return findings
 
 
 def json_object_keys(path: Path, key: str) -> set[str]:
@@ -160,7 +265,7 @@ def build_report() -> dict[str, Any]:
     skills = read_manifest_skills()
     shared = read_shared_mcp()
     agents = target_records(skills, shared)
-    findings = rule_findings()
+    findings = rule_findings() + mcp_usability_findings()
     for agent in agents:
         if agent["name"] != "Agents" and not agent["config_present"]:
             findings.append({"severity": "attention", "message": f"{agent['name']} is supported but has no local configuration."})

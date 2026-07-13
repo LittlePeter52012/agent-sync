@@ -13,6 +13,7 @@ like ${VAR} are filled from donor configs (Cursor / Antigravity) when available.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -126,6 +127,8 @@ def resolve_value(
         key = PLACEHOLDER_RE.match(value).group(1)  # type: ignore[union-attr]
         if key in mapping:
             return mapping[key]
+        if key in os.environ:
+            return os.environ[key]
         if existing is not None and not is_placeholder(existing):
             return existing
         return None

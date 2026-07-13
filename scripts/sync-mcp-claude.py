@@ -26,7 +26,8 @@ def is_placeholder(value: object) -> bool:
 
 def resolve(value: object, donors: dict[str, str]) -> object | None:
     if is_placeholder(value):
-        return donors.get(PLACEHOLDER_RE.match(value).group(1))  # type: ignore[union-attr]
+        key = PLACEHOLDER_RE.match(value).group(1)  # type: ignore[union-attr]
+        return donors.get(key) or os.environ.get(key)
     return value
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import sys
 import tempfile
@@ -93,6 +94,8 @@ def resolve(value: Any, mapping: dict[str, str], existing: Any = None) -> Any | 
     if variable:
         if variable in mapping:
             return mapping[variable]
+        if variable in os.environ:
+            return os.environ[variable]
         if existing is not None and not is_placeholder(existing):
             return existing
         return None
