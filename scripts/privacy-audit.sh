@@ -14,10 +14,23 @@ bad()  { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 warn() { echo "  WARN  $1"; WARN=$((WARN+1)); }
 
 TOKEN_RE='eyJ[a-zA-Z0-9_-]{20,}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|tvly-[a-zA-Z0-9]{8,}|Bearer [A-Za-z0-9+/=]{20,}'
-PII_RE='slavatang|DoctorTANG|OneDrive-个人'
-HISTORY_PII_RE='slavatang|DoctorTANG|OneDrive-个人'
+CURRENT_USER=$(basename "$HOME")
+PII_RE='/Users/[^/{]+|OneDrive-[^/ ]+'
+HISTORY_PII_RE="$PII_RE"
+[ -n "$CURRENT_USER" ] && HISTORY_PII_RE="$HISTORY_PII_RE|$CURRENT_USER"
 # Runtime check for home path leaks (not stored as literal in source)
 HOME_LEAK=$(printf '%s' "$HOME" | sed 's/[\/&]/\\&/g')
+
+github_slug() {
+    local url="${1:-}" slug=""
+    case "$url" in
+        git@github.com:*) slug="${url#git@github.com:}" ;;
+        https://github.com/*) slug="${url#https://github.com/}" ;;
+        http://github.com/*) slug="${url#http://github.com/}" ;;
+    esac
+    slug="${slug%.git}"
+    printf '%s' "$slug"
+}
 
 echo "╔══════════════════════════════════════════════╗"
 echo "║     agent-sync privacy audit                 ║"
@@ -69,17 +82,22 @@ else
         | grep -v '.git/' | grep -v 'privacy-audit' | grep -v '\${' | head -3 | grep -q .; then
         bad "hub contains raw tokens (use \${ENV} placeholders)"
     else
-        ok "hub uses placeholders (no raw tokens in tracked files)"
+        ok "hub uses placeholders (no raw tokens in Hub files)"
     fi
 
     if git -C "$HUB_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        vis=$(gh repo view "$(git -C "$HUB_ROOT" remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/')" --json isPrivate -q .isPrivate 2>/dev/null || echo "unknown")
-        if [ "$vis" = "false" ]; then
-            bad "hub GitHub repo is PUBLIC — must be private"
-        elif [ "$vis" = "true" ]; then
-            ok "hub GitHub repo is private"
+        hub_slug=$(github_slug "$(git -C "$HUB_ROOT" remote get-url origin 2>/dev/null || true)")
+        if [ -n "$hub_slug" ] && command -v gh >/dev/null 2>&1; then
+            vis=$(gh repo view "$hub_slug" --json isPrivate -q .isPrivate 2>/dev/null || echo "unknown")
+            if [ "$vis" = "false" ]; then
+                bad "hub GitHub repo is PUBLIC — must be private"
+            elif [ "$vis" = "true" ]; then
+                ok "hub GitHub repo is private"
+            else
+                warn "could not verify hub repo visibility"
+            fi
         else
-            warn "could not verify hub repo visibility (gh unavailable?)"
+            warn "hub GitHub remote or gh CLI unavailable — visibility not verified"
         fi
     fi
 fi
@@ -87,15 +105,18 @@ fi
 echo ""
 echo "[3] Remote public repo check"
 if command -v gh >/dev/null 2>&1; then
-    pub=$(gh repo view LittlePeter52012/agent-sync --json isPrivate -q .isPrivate 2>/dev/null || echo "unknown")
-    if [ "$pub" = "false" ]; then
-        ok "agent-sync GitHub repo is public (expected)"
-    fi
-    priv=$(gh repo view LittlePeter52012/agent-hub --json isPrivate -q .isPrivate 2>/dev/null || echo "unknown")
-    if [ "$priv" = "true" ]; then
-        ok "agent-hub GitHub repo is private (expected)"
-    elif [ "$priv" = "false" ]; then
-        bad "agent-hub is PUBLIC on GitHub"
+    tool_slug=$(github_slug "$(git -C "$SYNC_HOME" remote get-url origin 2>/dev/null || true)")
+    if [ -n "$tool_slug" ]; then
+        pub=$(gh repo view "$tool_slug" --json isPrivate -q .isPrivate 2>/dev/null || echo "unknown")
+        if [ "$pub" = "false" ]; then
+            ok "agent-sync GitHub repo is public (expected)"
+        elif [ "$pub" = "true" ]; then
+            warn "agent-sync GitHub repo is private"
+        else
+            warn "could not verify agent-sync repo visibility"
+        fi
+    else
+        warn "agent-sync GitHub remote is unavailable"
     fi
 else
     warn "gh CLI not available — skip remote check"
