@@ -87,6 +87,7 @@ if shared:
     mcp_targets = {
         "Antigravity": (Path.home()/".gemini/config/mcp_config.json", "json", "mcpServers"),
         "Cursor": (Path.home()/".cursor/mcp.json", "json", "mcpServers"),
+        "Claude": (Path.home()/".claude.json", "json", "mcpServers"),
         "VSCode/Copilot": (Path.home()/"Library/Application Support/Code/User/mcp.json", "json", "servers"),
         "OpenCode": (Path.home()/".config/opencode/opencode.json", "json", "mcp"),
         "Codex": (Path.home()/".codex/config.toml", "toml", ""),

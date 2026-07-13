@@ -29,33 +29,26 @@ from pathlib import Path
 
 target = Path(sys.argv[1])
 rule_path = Path(sys.argv[2])
-marker = sys.argv[3]
 priority = sys.argv[4]
+block_name = rule_path.stem
+begin = f"<!-- agent-sync:begin:{block_name} -->"
+end = f"<!-- agent-sync:end:{block_name} -->"
 
 text = target.read_text(encoding="utf-8")
 rule = rule_path.read_text(encoding="utf-8").strip()
-if not rule.startswith("["):
-    # ensure a marker heading exists for idempotent replace
-    if not rule.startswith(marker):
-        rule = f"{marker}\n{rule}"
-
-pattern = re.compile(
-    rf"\n?{re.escape(marker)}.*?(?=\n\[|\Z)",
-    re.DOTALL,
-)
-# also remove legacy Math Router marker if present
-text = re.sub(
-    r"\n?\[Math Router Rule\].*?(?=\n\[|\Z)",
-    "",
-    text,
-    flags=re.DOTALL,
-)
-text = pattern.sub("", text).rstrip() + "\n"
-
+# Remove any previous managed block first. The filename-based marker is stable
+# even if the heading inside a rule later changes.
+text = re.sub(rf"\n?{re.escape(begin)}.*?{re.escape(end)}\n?", "\n", text, flags=re.DOTALL)
+# Remove legacy unmarked copies written by releases before managed markers.
+text = text.replace(rule, "")
 if priority:
-    text += f"\n{priority.strip()}\n\n"
-
-text += rule + "\n"
+    text = text.replace(priority.strip(), "")
+text = text.rstrip()
+block = f"{begin}\n"
+if priority:
+    block += f"{priority.strip()}\n\n"
+block += f"{rule}\n{end}"
+text += f"\n\n{block}\n"
 target.write_text(text, encoding="utf-8")
 print(f"  ✓ injected → {target}")
 PY

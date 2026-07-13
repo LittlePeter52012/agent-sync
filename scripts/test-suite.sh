@@ -21,8 +21,8 @@ echo "  Hub:  $HUB_ROOT"
 echo ""
 
 echo "[1] CLI"
-if command -v agent-sync >/dev/null 2>&1; then ok "agent-sync on PATH"; else bad "agent-sync on PATH"; fi
-if agent-sync help >/dev/null 2>&1; then ok "agent-sync help"; else bad "agent-sync help"; fi
+if [ -x "$SYNC_HOME/bin/agent-sync" ]; then ok "agent-sync entrypoint exists"; else bad "agent-sync entrypoint exists"; fi
+if "$SYNC_HOME/bin/agent-sync" help >/dev/null 2>&1; then ok "agent-sync help"; else bad "agent-sync help"; fi
 if [ -f "$HUB_ROOT/manifest.yaml" ]; then ok "hub manifest exists"; else bad "hub manifest exists"; fi
 
 SKILLS=$(read_skill_list | tr '\n' ' ')
@@ -80,7 +80,7 @@ check_links "Agents" "$HOME/.agents/skills"
 echo ""
 echo "[4] MCP (if hub defines shared servers)"
 if [ -f "$HUB_ROOT/mcp/shared-servers.json" ]; then
-  "$PY" - "$HUB_ROOT" <<'PY'
+  if "$PY" - "$HUB_ROOT" <<'PY'
 import json, re, sys
 from pathlib import Path
 hub = Path(sys.argv[1])
@@ -89,6 +89,7 @@ home = Path.home()
 checks = [
     ("Antigravity", home/".gemini/config/mcp_config.json", "json", "mcpServers"),
     ("Cursor", home/".cursor/mcp.json", "json", "mcpServers"),
+    ("Claude", home/".claude.json", "json", "mcpServers"),
     ("VSCode/Copilot", home/"Library/Application Support/Code/User/mcp.json", "json", "servers"),
     ("OpenCode", home/".config/opencode/opencode.json", "json", "mcp"),
     ("Codex", home/".codex/config.toml", "toml", ""),
@@ -106,7 +107,7 @@ for name, path, kind, key in checks:
     print(f"  {status}  {name} MCP {have}/{len(shared)}")
 sys.exit(fail)
 PY
-  if [ $? -eq 0 ]; then PASS=$((PASS+5)); else FAIL=$((FAIL+5)); fi
+  then PASS=$((PASS+6)); else FAIL=$((FAIL+6)); fi
 else
   ok "no shared MCP in hub (skip)"
 fi
@@ -174,8 +175,8 @@ if bash "$SCRIPT_DIR/privacy-audit.sh" >/dev/null 2>&1; then ok "privacy audit p
 
 echo ""
 echo "[7] Idempotency"
-if agent-sync all >/tmp/agent-sync-retest.log 2>&1; then ok "second agent-sync all"; else bad "second agent-sync all"; fi
-if agent-sync verify >/dev/null 2>&1; then ok "verify still passes"; else bad "verify still passes"; fi
+if "$SYNC_HOME/bin/agent-sync" all >/tmp/agent-sync-retest.log 2>&1; then ok "second agent-sync all"; else bad "second agent-sync all"; fi
+if "$SYNC_HOME/bin/agent-sync" verify >/dev/null 2>&1; then ok "verify still passes"; else bad "verify still passes"; fi
 
 echo ""
 echo "════════════════════════════════════════"

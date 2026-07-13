@@ -24,23 +24,57 @@ def is_placeholder(value: object) -> bool:
     return isinstance(value, str) and bool(PLACEHOLDER_RE.match(value))
 
 
-def concrete_env(env: dict[str, Any]) -> dict[str, str] | None:
+def resolve(value: object, donors: dict[str, str]) -> object | None:
+    if is_placeholder(value):
+        return donors.get(PLACEHOLDER_RE.match(value).group(1))  # type: ignore[union-attr]
+    return value
+
+
+def donor_maps() -> dict[str, dict[str, str]]:
+    """Read only concrete values already configured for the same shared MCP."""
+    result: dict[str, dict[str, str]] = {}
+    for path in (Path.home() / ".cursor" / "mcp.json", Path.home() / ".gemini" / "config" / "mcp_config.json"):
+        if not path.exists():
+            continue
+        try:
+            servers = json.loads(path.read_text(encoding="utf-8")).get("mcpServers", {})
+        except json.JSONDecodeError:
+            continue
+        for name, config in servers.items():
+            if not isinstance(config, dict):
+                continue
+            values = result.setdefault(name.lower(), {})
+            for key, value in (config.get("env") or {}).items():
+                if isinstance(value, str) and not is_placeholder(value):
+                    values[str(key)] = value
+                    if key == "OPENAPI_MCP_HEADERS":
+                        values.setdefault("ANYTYPE_MCP_HEADERS", value)
+            for index, value in enumerate(config.get("args") or []):
+                if isinstance(value, str) and not is_placeholder(value):
+                    values.setdefault(f"ARG_{index}", value)
+    return result
+
+
+def concrete_env(env: dict[str, Any], donors: dict[str, str]) -> dict[str, str] | None:
     out: dict[str, str] = {}
     for k, v in env.items():
-        if is_placeholder(v):
+        value = resolve(v, donors)
+        if value is None:
             return None
-        if v is not None and str(v) != "":
-            out[str(k)] = str(v)
+        if str(value) != "":
+            out[str(k)] = str(value)
     return out
 
 
-def concrete_args(args: list[Any]) -> list[str] | None:
+def concrete_args(args: list[Any], donors: dict[str, str]) -> list[str] | None:
     out: list[str] = []
-    for arg in args:
-        if is_placeholder(arg):
+    for index, arg in enumerate(args):
+        value = resolve(arg, donors)
+        if value is None:
+            value = donors.get(f"ARG_{index}") if is_placeholder(arg) else None
+        if value is None:
             return None
-        if arg is not None:
-            out.append(str(arg))
+        out.append(str(value))
     return out
 
 
@@ -63,11 +97,11 @@ def configured_names(claude_bin: str) -> set[str]:
     return names
 
 
-def command_for(name: str, cfg: dict[str, Any], scope: str) -> list[str] | None:
+def command_for(name: str, cfg: dict[str, Any], scope: str, donors: dict[str, str]) -> list[str] | None:
     typ = cfg.get("type", "stdio")
     if typ == "http" or cfg.get("url"):
-        url = cfg.get("url")
-        if not url or is_placeholder(url):
+        url = resolve(cfg.get("url"), donors)
+        if not url:
             return None
         cmd = ["mcp", "add", "--scope", scope, "--transport", "http", name, str(url)]
         for key, value in (cfg.get("headers") or {}).items():
@@ -75,15 +109,15 @@ def command_for(name: str, cfg: dict[str, Any], scope: str) -> list[str] | None:
                 cmd.extend(["--header", f"{key}: {value}"])
         return cmd
 
-    command = cfg.get("command")
-    if not command or is_placeholder(command):
+    command = resolve(cfg.get("command"), donors)
+    if not command:
         return None
-    args = concrete_args(cfg.get("args") or [])
+    args = concrete_args(cfg.get("args") or [], donors)
     if args is None:
         return None
 
     cmd = ["mcp", "add", "--scope", scope, name]
-    env = concrete_env(cfg.get("env") or {})
+    env = concrete_env(cfg.get("env") or {}, donors)
     if env is None:
         return None
     for key, value in env.items():
@@ -103,19 +137,26 @@ def main() -> int:
     scope = os.environ.get("CLAUDE_MCP_SYNC_SCOPE", "user")
     canonical = json.loads(Path(argv[0]).expanduser().read_text(encoding="utf-8"))
     existing = configured_names(claude_bin) if not dry_run else set()
+    donors = donor_maps()
 
     added = skipped = existing_count = 0
+    skipped_names: list[str] = []
     for name, cfg in (canonical.get("mcpServers") or {}).items():
         if name.lower() in existing:
             existing_count += 1
             continue
-        cmd = command_for(name, cfg, scope)
+        cmd = command_for(name, cfg, scope, donors.get(name.lower(), {}))
         if not cmd:
             skipped += 1
+            skipped_names.append(name)
             continue
         full_cmd = [claude_bin, *cmd]
         if dry_run:
-            print("  would run: " + " ".join(shlex.quote(part) for part in full_cmd))
+            display = [shlex.quote(part) for part in full_cmd]
+            for index, part in enumerate(full_cmd[:-1]):
+                if part == "--env":
+                    display[index + 1] = "'<redacted env>'"
+            print("  would run: " + " ".join(display))
             added += 1
             continue
         result = subprocess.run(full_cmd, text=True, check=False)
@@ -123,8 +164,11 @@ def main() -> int:
             added += 1
         else:
             skipped += 1
+            skipped_names.append(name)
 
     print(f"  claude mcp: +{added} existing={existing_count} skipped={skipped}")
+    if skipped_names:
+        print("  skipped: " + ", ".join(skipped_names))
     return 0
 
 
