@@ -223,6 +223,10 @@ case "$cmd" in
                 *) echo "Unknown: $1"; usage 1 ;;
             esac
         done
+        if ! bash "$SCRIPTS/privacy-audit.sh"; then
+            echo "ERROR: privacy audit failed; Hub was not staged or pushed." >&2
+            exit 1
+        fi
         cd "$HUB"
         if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             echo "Hub is not a git repository: $HUB" >&2

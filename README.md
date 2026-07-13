@@ -98,6 +98,17 @@ original full Hub-to-tools workflow.
 | **Personal hub** | Your skills / MCP / rules | `~/.config/agent-hub` | **Private** (your choice) |
 
 ```
+
+### Privacy boundary
+
+- The **public agent-sync repository** contains only the synchronizer, generic
+  examples, tests, and the generic workflow diagram above.
+- The **private Agent Hub** contains personal Skills, shared MCP definitions,
+  Rules, the Skill whitelist, and retired shared-server names.
+- Local credentials and machine-specific paths stay in environment variables or
+  local Agent configurations; Hub definitions should use `${ENV}` placeholders.
+- `agent-sync push` runs the privacy audit before staging or pushing Hub files.
+  Normal `sync` never copies private Hub content into the public tool repository.
 ~/.local/share/agent-sync/     ← tool (public)
 ~/.config/agent-hub/           ← YOUR configs (keep private)
     manifest.yaml
