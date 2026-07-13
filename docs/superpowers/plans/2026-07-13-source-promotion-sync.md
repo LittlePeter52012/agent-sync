@@ -15,6 +15,7 @@
 - 公开输出和公开仓库不得包含密钥、私人 Hub 内容、个人路径或个人仓库地址。
 - 写 Hub 前必须备份；空来源、损坏来源和 Profile 歧义必须在任何写入前失败。
 - 删除只作用于 Hub 过去管理过的 MCP 名称，不能删除工具专属 MCP。
+- 共享 MCP 的命令、普通参数、传输类型和 URL 以 Hub 为准；具体密钥和本机绝对路径保留。
 - `all` 保持为 `sync` 的兼容别名，现有细分命令不能失效。
 
 ---
@@ -97,6 +98,8 @@ git commit -m "feat: promote MCP config from selected agent"
 
 **文件：**
 - 新建：`scripts/prune-retired-mcp.py`
+- 修改：`scripts/merge-mcp.py`
+- 修改：`scripts/merge-mcp-codex.py`
 - 修改：`scripts/sync-mcp.sh`
 - 修改：`scripts/sync-mcp-claude.py`
 - 修改：`tests/test_promote_mcp.py`
@@ -112,6 +115,9 @@ git commit -m "feat: promote MCP config from selected agent"
 `tool-only`。分别覆盖 Cursor 形状、VS Code 形状、OpenCode 形状和 Codex TOML，
 断言前者删除、后者保留；为 Claude 使用假 CLI，断言调用
 `claude mcp remove --scope user old-shared`。
+
+再构造同名 `shared`：Hub 使用新 URL、新命令或新普通参数，目标使用旧结构并含有
+具体环境变量。断言同步后结构采用 Hub，新环境变量值仍保留，`tool-only` 不变。
 
 - [ ] **步骤 2：运行测试并确认按预期失败**
 
@@ -133,6 +139,10 @@ JSON 按大小写不敏感名称删除 `mcpServers`、`servers` 或 `mcp` 中的
 `sync-mcp.sh` 在 merge 前对默认目标和每个 VS Code Profile 执行清理；Claude
 脚本在添加前调用官方 CLI 删除退役名称。重新加入共享集合的名称不会保留在退役文件中。
 
+同时调整 JSON 和 Codex 合并器：共享名称的非敏感结构以 Hub 为准，目标已有的具体
+`env`、`headers` 和本机绝对路径保留。Codex 对共享名称替换对应 TOML 区块；Claude
+对共享名称通过官方 CLI 重新建立，使变更真正收敛，而不是只补充缺失名称。
+
 - [ ] **步骤 4：运行聚焦测试并确认通过**
 
 ```bash
@@ -142,7 +152,7 @@ python3 -m unittest tests/test_promote_mcp.py -v
 - [ ] **步骤 5：提交安全删除能力**
 
 ```bash
-git add scripts/prune-retired-mcp.py scripts/sync-mcp.sh scripts/sync-mcp-claude.py tests/test_promote_mcp.py
+git add scripts/prune-retired-mcp.py scripts/merge-mcp.py scripts/merge-mcp-codex.py scripts/sync-mcp.sh scripts/sync-mcp-claude.py tests/test_promote_mcp.py
 git commit -m "feat: converge retired shared MCP servers"
 ```
 
