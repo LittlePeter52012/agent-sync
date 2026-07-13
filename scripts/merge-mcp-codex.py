@@ -15,6 +15,7 @@ from typing import Any
 
 PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 TABLE_RE = re.compile(r"^\s*\[mcp_servers\.([^\.\]\s]+)(?:\.(env|headers|http_headers))?\]\s*$")
+ANY_TABLE_RE = re.compile(r"^\s*\[[^\]]+\]\s*$")
 MARKER = "# --- agent-hub shared MCP (managed) ---"
 
 
@@ -41,6 +42,10 @@ def parse_servers(text: str) -> dict[str, dict[str, Any]]:
             if section:
                 current.setdefault(section, {})
             continue
+        if ANY_TABLE_RE.match(line):
+            current = None
+            section = None
+            continue
         if current is None or "=" not in line or line.lstrip().startswith("#"):
             continue
         key, raw = line.split("=", 1)
@@ -56,9 +61,10 @@ def remove_server_blocks(text: str, names: set[str]) -> str:
     out: list[str] = []
     skipping = False
     for line in text.splitlines(keepends=True):
-        table = TABLE_RE.match(line.rstrip("\r\n"))
-        if table:
-            skipping = table.group(1).lower() in names
+        header = line.rstrip("\r\n")
+        if ANY_TABLE_RE.match(header):
+            table = TABLE_RE.match(header)
+            skipping = bool(table and table.group(1).lower() in names)
         if not skipping:
             out.append(line)
     result = "".join(out).replace(MARKER + "\n", "")

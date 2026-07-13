@@ -239,6 +239,7 @@ class PromoteMcpTests(unittest.TestCase):
         codex.write_text(
             '[mcp_servers.old-shared]\ncommand = "old"\n\n'
             '[mcp_servers.old-shared.env]\nTOKEN = "secret"\n\n'
+            '[features]\nweb_search = true\n\n'
             '[mcp_servers.tool-only]\ncommand = "keep"\n',
             encoding="utf-8",
         )
@@ -257,6 +258,8 @@ class PromoteMcpTests(unittest.TestCase):
         codex_text = codex.read_text()
         self.assertNotIn("mcp_servers.old-shared", codex_text)
         self.assertIn("mcp_servers.tool-only", codex_text)
+        self.assertIn("[features]", codex_text)
+        self.assertIn("web_search = true", codex_text)
         self.assertNotIn("secret", codex_text)
 
     def test_json_merge_updates_shared_structure_but_preserves_local_secret(self):
@@ -328,6 +331,7 @@ class PromoteMcpTests(unittest.TestCase):
         target.write_text(
             '[mcp_servers.shared]\ncommand = "old-command"\nargs = ["--old"]\n\n'
             '[mcp_servers.shared.env]\nTOKEN = "local-secret"\n\n'
+            '[features]\nweb_search = true\n\n'
             '[mcp_servers.tool-only]\ncommand = "keep"\n',
             encoding="utf-8",
         )
@@ -345,6 +349,8 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn('args = ["--new"]', text)
         self.assertIn('TOKEN = "local-secret"', text)
         self.assertIn("[mcp_servers.tool-only]", text)
+        self.assertIn("[features]", text)
+        self.assertIn("web_search = true", text)
         self.assertNotIn("old-command", text)
 
     def test_claude_sync_replaces_existing_shared_server(self):

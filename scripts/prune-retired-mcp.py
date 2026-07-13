@@ -12,6 +12,7 @@ from typing import Any
 
 
 MCP_TABLE_RE = re.compile(r"^\s*\[mcp_servers\.([^\.\]\s]+)(?:\.[^\]]+)?\]\s*$")
+ANY_TABLE_RE = re.compile(r"^\s*\[[^\]]+\]\s*$")
 
 
 def read_retired(path: Path) -> set[str]:
@@ -58,12 +59,12 @@ def prune_codex_text(text: str, retired: set[str]) -> tuple[str, int]:
     skipping = False
     removed: set[str] = set()
     for line in text.splitlines(keepends=True):
-        match = MCP_TABLE_RE.match(line.rstrip("\r\n"))
-        if match:
-            name = match.group(1).lower()
-            skipping = name in retired
-            if skipping:
-                removed.add(name)
+        header = line.rstrip("\r\n")
+        if ANY_TABLE_RE.match(header):
+            match = MCP_TABLE_RE.match(header)
+            skipping = bool(match and match.group(1).lower() in retired)
+            if skipping and match:
+                removed.add(match.group(1).lower())
         if not skipping:
             out.append(line)
     result = "".join(out)
