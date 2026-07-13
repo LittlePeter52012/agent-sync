@@ -1,37 +1,33 @@
-# Source Promotion Sync Design
+# 指定来源提升与全量同步设计
 
-## Goal
+## 目标
 
-Keep agent-sync as a small personal tool with three clear operations:
+将 agent-sync 保持为一个简单的个人工具，只提供三个清晰的核心操作：
 
-- `agent-sync sync`: use the local private Hub as the source of truth and
-  distribute it to every supported Agent tool.
-- `agent-sync sync --from <tool>`: promote one Agent tool's MCP configuration
-  into the Hub, then distribute the promoted configuration to every tool.
-- `agent-sync fix`: repair deterministic coverage and managed-rule problems,
-  then print the health report.
+- `agent-sync sync`：以本机私人 Hub 为唯一配置源，将配置分发到所有支持的
+  Agent 工具。
+- `agent-sync sync --from <工具>`：将指定 Agent 工具中的 MCP 配置提升到
+  Hub，然后把提升后的配置分发到所有工具。
+- `agent-sync fix`：修复可以确定处理的覆盖缺失和托管规则问题，最后打印健康报告。
 
-The same commands must cover both an existing installation and first-time
-onboarding. A user who already has one well-configured Agent can use that Agent
-as the initial template without manually constructing the Hub first.
+同一组命令必须同时覆盖现有安装和首次使用。用户已经有一个配置良好的 Agent
+时，可以直接将它作为初始模板，不需要先手工创建 Hub。
 
-Reverse promotion applies only to MCP. Shared Skills are already Hub symlinks,
-and Rules remain Hub-owned to avoid promoting tool-specific instructions.
+反向提升只处理 MCP。共享 Skills 已经通过软链接指向 Hub；Rules 始终由 Hub
+管理，避免把某个工具的专属说明错误推广到全部 Agent。
 
-## Chosen approach
+## 选定方案
 
-The source tool is always explicit. The synchronizer must not infer authority
-from modification time, file order, version number, or whichever Agent ran
-most recently. `sync --from vscode` means that VS Code is authoritative for
-this one MCP promotion; a later `sync --from opencode` explicitly transfers
-authority to OpenCode for that operation.
+每次都由用户明确指定来源工具。同步器不能根据文件修改时间、文件顺序、版本号，
+或者最近运行过哪个 Agent 来猜测哪个版本正确。
+`sync --from vscode` 表示仅在本次 MCP 提升中以 VS Code 为权威来源；之后运行
+`sync --from opencode`，则明确表示本次改用 OpenCode 作为权威来源。
 
-Before writing, the command prints a terminal plan containing the selected
-source plus added, changed, removed, and unchanged MCP server names. Interactive
-execution requires one confirmation. `--dry-run` prints the same plan and makes
-no changes; `--yes` is available for intentional non-interactive use.
+写入前，命令在终端打印同步计划，列出选定来源，以及新增、修改、删除和保持不变的
+MCP 服务器名称。交互式执行需要确认一次；`--dry-run` 打印同样的计划但不进行
+任何写入；`--yes` 用于用户明确需要的非交互式运行。
 
-## Commands
+## 命令
 
 ```text
 agent-sync sync
@@ -41,120 +37,108 @@ agent-sync sync --from cursor|antigravity|opencode|codex|claude
 agent-sync fix [--dry-run]
 ```
 
-`all` remains as a backward-compatible alias for `sync`. Existing granular
-commands (`skills`, `mcp`, and `rules`) remain available.
+`all` 保留为 `sync` 的向后兼容别名。现有的细分命令 `skills`、`mcp` 和
+`rules` 继续保留。
 
-When `sync --from <tool>` is used without an existing Hub, agent-sync creates
-the minimal private Hub structure first, promotes the source MCP configuration,
-and then performs the normal full synchronization. Plain `sync` still requires
-an existing Hub because it has no safe source from which to bootstrap one.
+如果运行 `sync --from <工具>` 时 Hub 尚不存在，agent-sync 先建立最小的
+私人 Hub 目录结构，再提升来源 MCP 配置并执行正常的全量同步。普通的 `sync`
+仍然要求 Hub 已经存在，因为它没有可以安全采用的初始配置源。
 
-For VS Code, an unqualified source selects the only non-builtin Profile with an
-MCP configuration, falling back to the default user MCP file when no such
-Profile exists. If several non-builtin Profiles qualify, the command stops and
-lists safe profile identifiers; the user must choose `vscode:<profile-id>`.
+对于 VS Code，不带 Profile 的 `vscode` 优先选择唯一一个包含 MCP 配置的非
+内置 Profile；如果没有这样的 Profile，则使用默认用户 MCP 文件。如果存在多个
+符合条件的非内置 Profile，命令停止并列出不含敏感信息的 Profile 标识，用户必须
+明确指定 `vscode:<profile-id>`。
 
-## Promotion semantics
+## 提升规则
 
-The selected source's MCP server set becomes the desired shared set in
-`mcp/shared-servers.json`:
+选定来源中的 MCP 服务器集合成为 `mcp/shared-servers.json` 中新的共享目标集合：
 
-- source-only names are added;
-- names in both locations are updated from the source;
-- Hub-only names are removed;
-- MCP servers that were never managed by the Hub remain tool-local in other
-  Agent configurations.
+- 仅存在于来源中的名称会被新增；
+- 来源和 Hub 中都存在的名称按来源更新；
+- 仅存在于 Hub 中的名称会被删除；
+- 其他 Agent 中从未被 Hub 管理过的 MCP 仍保留为该工具的本地专属配置。
 
-An empty or unreadable source is rejected so a missing file cannot erase the
-Hub. Before changing the Hub, agent-sync writes a timestamped local backup.
+空来源、无法读取的来源或者格式错误的来源都会被拒绝，避免因配置文件缺失而清空
+Hub。修改 Hub 前，agent-sync 创建带时间戳的本地备份。
 
-The source is converted from its native format into the existing canonical
-`mcpServers` format. Existing Hub placeholders are retained for corresponding
-sensitive fields. New concrete environment values and header credentials are
-replaced by deterministic environment placeholders. Secret values are never
-printed, written into the public agent-sync repository, or included in the
-terminal plan. During local distribution, concrete values may be resolved from
-the selected source, another existing local Agent configuration, or the process
-environment; they are not copied into the canonical Hub file. Any value that
-cannot be resolved is reported as a safe finding instead of being guessed.
+来源配置从工具自身格式转换为现有的标准 `mcpServers` 格式。对应敏感字段如果在
+旧 Hub 中已有占位符，则继续保留该占位符。新出现的环境变量值和请求头凭据会转换为
+确定性的环境变量占位符。密钥值不会打印到终端、写入公开的 agent-sync 仓库，或者
+出现在同步计划中。
 
-After confirmation, the operation is transactional at the Hub boundary:
+在本机分发时，具体值可以从选定来源、其他已有的本地 Agent 配置或进程环境中解析，
+但不会复制到 Hub 的标准配置文件中。无法解析的值会变成不含敏感内容的检查结果，
+而不会由工具猜测或伪造。
 
-1. validate and normalize the selected source;
-2. back up the current canonical MCP file;
-3. atomically replace the canonical MCP file;
-4. run the existing Skills, MCP, and Rules synchronizers;
-5. run verification and print `doctor`.
+用户确认后，Hub 边界内的操作按以下顺序执行：
 
-If validation or Hub replacement fails, no target is changed. If a downstream
-target fails, the new Hub remains authoritative, the failure is reported, and
-`agent-sync fix` can retry distribution.
+1. 验证并标准化选定来源；
+2. 备份当前标准 MCP 文件；
+3. 原子替换标准 MCP 文件；
+4. 调用现有 Skills、MCP 和 Rules 同步器；
+5. 执行验证并打印 `doctor` 报告。
 
-Verification covers all three managed capabilities. It confirms that every
-supported target has the Hub's Skill whitelist, shared MCP names in the
-target's native format, and the managed Rule blocks. It also reports unresolved
-placeholders and missing local MCP executables without attempting network login
-or starting authenticated remote servers. Runtime authentication and an
-application's first-use trust prompt remain explicit user actions.
+如果来源验证或 Hub 替换失败，不修改任何目标工具。如果后续某个目标同步失败，新的
+Hub 仍然作为权威配置保留，同时明确报告失败；用户可以运行 `agent-sync fix` 重试
+分发。
 
-## GitHub behavior
+验证覆盖全部三类托管能力：确认每个支持目标都具有 Hub 的 Skill 白名单、目标原生
+格式中的共享 MCP 名称，以及托管的 Rule 区块。验证还会报告未解析的占位符和缺少的
+本地 MCP 可执行命令，但不会尝试网络登录或启动需要认证的远程服务器。应用程序首次
+使用时的认证和信任提示仍由用户明确完成。
 
-Normal synchronization does not silently pull from or push to GitHub. This
-keeps local edits deterministic and prevents unrelated dirty Hub files from
-being committed. The complete two-command remote workflow is:
+## GitHub 行为
+
+普通同步不会暗中从 GitHub 拉取或向 GitHub 推送。这样可以保证本地修改具有确定性，
+也能避免把 Hub 中无关的未提交文件一起提交。完整的远端备份流程保持为两条命令：
 
 ```text
 agent-sync sync --from vscode
-agent-sync push -m "promote VS Code MCP configuration"
+agent-sync push -m "采用 VS Code MCP 配置"
 ```
 
-On another machine, use `agent-sync pull` followed by `agent-sync sync`.
-`agent-sync push` and the privacy audit remain responsible for remote backup
-and secret checks.
+在另一台机器上，先运行 `agent-sync pull`，再运行 `agent-sync sync`。
+`agent-sync push` 和隐私审计继续负责远端备份与敏感信息检查。
 
-## Implementation boundaries
+## 实现边界
 
-Add one dependency-free Python promotion script responsible for source
-discovery, format conversion, redacted planning, backup, and atomic Hub writes.
-The shell entrypoint owns command parsing and invokes the existing downstream
-synchronizers. Do not add a database, background watcher, modification-time
-heuristics, per-Agent overlay system, or automatic GitHub commit.
+新增一个不依赖第三方库的 Python 提升脚本，负责来源发现、格式转换、脱敏计划、备份
+和 Hub 原子写入。Shell 入口负责命令参数解析，并调用现有的下游同步器。
 
-## Public documentation
+本次不增加数据库、后台监听器、基于修改时间的推断、每个 Agent 独立覆盖层，也不
+自动提交 GitHub。
 
-The public README provides two short paths after installation:
+## 公开使用说明
+
+公开 README 在安装步骤后提供两条最短使用路径：
 
 ```text
-# Start from an existing private Hub
+# 已经有私人 Hub
 agent-sync sync
 
-# First use: adopt the Agent that already works
+# 首次使用：采用已经正常工作的 Agent
 agent-sync sync --from vscode
 ```
 
-It documents supported source names, VS Code Profile selection, dry-run and
-confirmation behavior, `fix`, `doctor`, private Hub GitHub backup, and the fact
-that authentication prompts are not synchronized. Examples use generic names,
-environment placeholders, and paths only. No personal repository URL, account
-name, secret, private Hub content, or machine-specific path is committed to the
-public repository.
+说明中必须涵盖支持的来源名称、VS Code Profile 选择、预演和确认行为、`fix`、
+`doctor`、私人 Hub 的 GitHub 备份方式，以及认证提示不会被同步这一事实。示例只使用
+通用名称、环境变量占位符和通用路径。公开仓库中不得出现个人仓库地址、账号名称、
+密钥、私人 Hub 内容或本机专属路径。
 
-## Verification
+## 验证要求
 
-Fixture-based tests must prove:
+基于临时目录和样例配置的自动化测试必须证明：
 
-- a VS Code change updates the Hub and is then available to other targets;
-- dry-run is byte-for-byte read-only;
-- multiple VS Code Profiles require an explicit safe identifier;
-- unreadable and empty sources do not change the Hub;
-- additions, updates, and removals are reported without secret values;
-- existing placeholders survive promotion and new sensitive values become
-  placeholders;
-- `sync` remains equivalent to the previous `all` workflow;
-- first-use `sync --from` creates the minimal Hub and completes distribution;
-- Skills, MCP names, and managed Rules reach every supported target;
-- unresolved placeholders and missing MCP executables are reported safely;
-- the public privacy audit and the complete existing evaluation suite pass.
+- VS Code 中的改动能够更新 Hub，并随后提供给其他目标；
+- `--dry-run` 在字节层面不修改任何文件；
+- 存在多个 VS Code Profile 时，必须明确指定安全的 Profile 标识；
+- 无法读取或内容为空的来源不会改变 Hub；
+- 新增、修改和删除会被报告，但不会显示密钥值；
+- 原有占位符在提升后继续保留，新敏感值会变成占位符；
+- `sync` 与原有 `all` 工作流保持等价；
+- 首次运行 `sync --from` 能创建最小 Hub 并完成分发；
+- Skills、MCP 名称和托管 Rules 能到达每个支持目标；
+- 未解析占位符和缺少的 MCP 可执行命令会被安全报告；
+- 公开仓库隐私审计和现有完整测试套件全部通过。
 
-The explanatory flowchart is a separate private/local artifact and is not
-committed to the public agent-sync repository.
+面向用户的解释流程图是独立的私人或本地文件，不提交到公开 agent-sync 仓库。
