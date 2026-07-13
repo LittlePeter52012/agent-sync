@@ -234,6 +234,8 @@ def detect_format(path: Path, doc: dict[str, Any]) -> str:
         return "opencode"
     if "servers" in doc and "mcpServers" not in doc:
         return "vscode"
+    if path.name == "mcp.json" and path.parent.parent.name == "profiles":
+        return "vscode"
     if path.name == "mcp.json" and "Application Support/Code" in str(path):
         return "vscode"
     return "cursor"

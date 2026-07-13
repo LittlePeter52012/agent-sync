@@ -78,6 +78,11 @@ or account/subscription information. `fix` is intentionally narrow: it repairs
 missing sync coverage and duplicate managed rule blocks, while preserving any
 existing local MCP override.
 
+For VS Code, `agent-sync mcp` merges shared MCP servers into the default user
+configuration and every existing VS Code Profile. Profile-specific MCP files
+are separate in current VS Code releases, so `agent-sync doctor` reports each
+Profile's coverage individually.
+
 ### Auto-update (optional)
 
 Skills use **symlinks** — editing files in your hub updates all tools instantly (no re-sync).

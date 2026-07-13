@@ -34,6 +34,15 @@ for entry in "${TARGETS[@]}"; do
     python3 "$MERGE_PY" "$CANONICAL" "$target"
 done
 
+VSCODE_PROFILES="$HOME/Library/Application Support/Code/User/profiles"
+if [ -d "$VSCODE_PROFILES" ]; then
+    while IFS= read -r profile; do
+        target="$profile/mcp.json"
+        echo "[mcp] → VSCode profile ($(basename "$profile")) ($target)"
+        python3 "$MERGE_PY" "$CANONICAL" "$target"
+    done < <(find "$VSCODE_PROFILES" -mindepth 1 -maxdepth 1 -type d | sort)
+fi
+
 echo "[mcp] → Codex ($HOME/.codex/config.toml)"
 python3 "$MERGE_CODEX" "$CANONICAL" "$HOME/.codex/config.toml"
 

@@ -13,6 +13,7 @@ ENTRYPOINT = REPO / "bin" / "agent-sync"
 SYNC_RULES = REPO / "scripts" / "sync-rules.sh"
 LIST_SYNC = REPO / "scripts" / "list-sync.sh"
 SYNC_CLAUDE_MCP = REPO / "scripts" / "sync-mcp-claude.py"
+SYNC_MCP = REPO / "scripts" / "sync-mcp.sh"
 
 
 class AgentDoctorTests(unittest.TestCase):
@@ -134,6 +135,28 @@ class AgentDoctorTests(unittest.TestCase):
         subprocess.run(["python3", str(SYNC_CLAUDE_MCP), canonical], env=env, check=True, capture_output=True, text=True)
 
         self.assertIn("OPENAPI_MCP_HEADERS=donor-value", log.read_text())
+
+    def test_vscode_profile_without_mcp_is_reported_and_synced(self):
+        profile = self.home / "Library" / "Application Support" / "Code" / "User" / "profiles" / "paper"
+        profile.mkdir(parents=True)
+        (profile / "settings.json").write_text("{}")
+        fake_claude = Path(self.tempdir.name) / "claude"
+        fake_claude.write_text('#!/bin/sh\nexit 0\n')
+        fake_claude.chmod(0o755)
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+            "CLAUDE_BIN": str(fake_claude),
+        }
+
+        before = json.loads(self.run_doctor().stdout)
+        vscode = next(agent for agent in before["agents"] if agent["name"] == "Copilot / VS Code")
+        self.assertEqual(vscode["profiles"], [{"id": "paper", "mcp": {"configured": 0, "expected": 1}}])
+        self.assertTrue(any("paper" in finding["message"] for finding in before["findings"]))
+
+        subprocess.run(["bash", str(SYNC_MCP)], env=env, check=True, capture_output=True, text=True)
+        profile_config = json.loads((profile / "mcp.json").read_text())
+        self.assertIn("shared", profile_config["servers"])
 
 
 if __name__ == "__main__":

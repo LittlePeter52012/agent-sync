@@ -90,6 +90,17 @@ def count_mcp(names: set[str], shared: list[str]) -> dict[str, int]:
     return {"configured": len({name.lower() for name in names} & shared_lower), "expected": len(shared)}
 
 
+def vscode_profiles(shared: list[str]) -> list[dict[str, Any]]:
+    root = HOME / "Library" / "Application Support" / "Code" / "User" / "profiles"
+    if not root.exists():
+        return []
+    profiles = []
+    for profile in sorted(path for path in root.iterdir() if path.is_dir()):
+        config = profile / "mcp.json"
+        profiles.append({"id": profile.name, "mcp": count_mcp(json_object_keys(config, "servers"), shared)})
+    return profiles
+
+
 def capability_labels(name: str, config: Path) -> list[str]:
     labels = ["MCP"] if config.exists() else []
     if name == "Codex / ChatGPT":
@@ -128,6 +139,8 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
             "models": model_names(config, kind) if kind in {"json", "toml"} else [],
             "capabilities": capability_labels(name, config),
         }
+        if name == "Copilot / VS Code":
+            record["profiles"] = vscode_profiles(shared)
         records.append(record)
     return records
 
@@ -155,6 +168,9 @@ def build_report() -> dict[str, Any]:
             findings.append({"severity": "attention", "message": f"{agent['name']} skill coverage is incomplete."})
         if agent["mcp"]["expected"] and agent["mcp"]["configured"] != agent["mcp"]["expected"]:
             findings.append({"severity": "attention", "message": f"{agent['name']} shared MCP coverage is incomplete or command-managed."})
+        for profile in agent.get("profiles", []):
+            if profile["mcp"]["configured"] != profile["mcp"]["expected"]:
+                findings.append({"severity": "attention", "message": f"VS Code profile {profile['id']} shared MCP coverage is incomplete."})
     return {"overall": "ATTENTION" if findings else "HEALTHY", "agents": agents, "findings": findings}
 
 
@@ -175,6 +191,8 @@ def render(report: dict[str, Any]) -> str:
         )
         if agent["models"]:
             lines.append(f"{'':22} models: {', '.join(agent['models'])}")
+        for profile in agent.get("profiles", []):
+            lines.append(f"{'':22} profile {profile['id']}: {profile['mcp']['configured']}/{profile['mcp']['expected']} MCP")
     lines.extend(["", "Findings"])
     if report["findings"]:
         lines.extend(f"  ! {finding['message']}" for finding in report["findings"])
