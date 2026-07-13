@@ -19,10 +19,19 @@ from pathlib import Path
 from typing import Any
 
 
-DONORS = [
-    Path.home() / ".cursor" / "mcp.json",
-    Path.home() / ".gemini" / "config" / "mcp_config.json",
-]
+def donor_paths() -> list[Path]:
+    home = Path.home()
+    paths = [
+        home / ".cursor" / "mcp.json",
+        home / ".gemini" / "config" / "mcp_config.json",
+        home / ".claude.json",
+        home / ".config" / "opencode" / "opencode.json",
+        home / "Library" / "Application Support" / "Code" / "User" / "mcp.json",
+    ]
+    profiles = home / "Library" / "Application Support" / "Code" / "User" / "profiles"
+    if profiles.exists():
+        paths.extend(sorted(profiles.glob("*/mcp.json")))
+    return paths
 
 PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
@@ -47,7 +56,7 @@ def is_placeholder(value: Any) -> bool:
 def collect_donors() -> dict[str, dict[str, Any]]:
     """Lowercase name -> best donor server config."""
     out: dict[str, dict[str, Any]] = {}
-    for donor in DONORS:
+    for donor in donor_paths():
         for name, cfg in extract_servers(load_json(donor)).items():
             key = name.lower()
             # Prefer configs that already have concrete secrets/paths
@@ -107,23 +116,28 @@ def donor_lookup_map(donor_cfg: dict[str, Any]) -> dict[str, str]:
     return mapping
 
 
-def resolve_value(value: Any, mapping: dict[str, str], existing: Any = None) -> Any:
-    if existing is not None and not is_placeholder(existing) and existing not in ("", [], {}):
-        # Prefer existing concrete values
-        if isinstance(existing, str) and existing.startswith("${"):
-            pass
-        else:
-            return existing
+def resolve_value(
+    value: Any,
+    mapping: dict[str, str],
+    existing: Any = None,
+    prefer_existing: bool = False,
+) -> Any:
     if is_placeholder(value):
         key = PLACEHOLDER_RE.match(value).group(1)  # type: ignore[union-attr]
-        return mapping.get(key, existing if existing is not None else None)
+        if key in mapping:
+            return mapping[key]
+        if existing is not None and not is_placeholder(existing):
+            return existing
+        return None
+    if prefer_existing and existing is not None and not is_placeholder(existing) and existing not in ("", [], {}):
+        return existing
     return value
 
 
 def resolve_env(template_env: dict[str, Any], existing_env: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     for k, v in template_env.items():
-        resolved = resolve_value(v, mapping, existing_env.get(k))
+        resolved = resolve_value(v, mapping, existing_env.get(k), prefer_existing=True)
         if resolved is not None and not is_placeholder(resolved):
             merged[k] = resolved
     for k, v in existing_env.items():
@@ -133,9 +147,6 @@ def resolve_env(template_env: dict[str, Any], existing_env: dict[str, Any], mapp
 
 
 def resolve_args(template_args: list[Any] | None, existing_args: list[Any] | None, mapping: dict[str, str]) -> list[Any]:
-    if existing_args and not any(is_placeholder(a) for a in existing_args):
-        # Keep existing concrete args (paths/secrets already configured)
-        return list(existing_args)
     args = list(template_args or [])
     out = []
     for i, a in enumerate(args):
@@ -148,25 +159,42 @@ def resolve_args(template_args: list[Any] | None, existing_args: list[Any] | Non
 
 
 def resolve_command(template_cmd: Any, existing_cmd: Any, mapping: dict[str, str]) -> Any:
-    if existing_cmd and not is_placeholder(existing_cmd):
-        # Keep absolute paths already working on this machine
-        if isinstance(existing_cmd, str) and existing_cmd.startswith("/"):
-            return existing_cmd
-        if isinstance(existing_cmd, list):
-            return existing_cmd
+    if isinstance(existing_cmd, str) and existing_cmd.startswith("/"):
+        return existing_cmd
     return resolve_value(template_cmd, mapping, existing_cmd)
+
+
+def resolve_sensitive_mapping(
+    template: dict[str, Any], existing: dict[str, Any], mapping: dict[str, str]
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in template.items():
+        resolved = resolve_value(value, mapping, existing.get(key), prefer_existing=True)
+        if resolved is not None and not is_placeholder(resolved):
+            out[key] = resolved
+    for key, value in existing.items():
+        if key not in out and not is_placeholder(value):
+            out[key] = value
+    return out
 
 
 def to_cursor_shape(template: dict[str, Any], existing: dict[str, Any] | None, mapping: dict[str, str]) -> dict[str, Any]:
     out = json.loads(json.dumps(existing or {}))
     t = template.get("type", "stdio")
     if t == "http" or "url" in template:
-        out["type"] = out.get("type") or "http"
+        out.pop("command", None)
+        out.pop("args", None)
+        out.pop("env", None)
+        out["type"] = "http"
         out["url"] = resolve_value(template.get("url"), mapping, out.get("url"))
-        if template.get("headers") is not None and "headers" not in out:
-            out["headers"] = template.get("headers", {})
+        if isinstance(template.get("headers"), dict):
+            headers = resolve_sensitive_mapping(template["headers"], out.get("headers", {}), mapping)
+            if headers:
+                out["headers"] = headers
     else:
-        out["type"] = out.get("type") or template.get("type", "stdio")
+        out.pop("url", None)
+        out.pop("headers", None)
+        out["type"] = template.get("type", "stdio")
         out["command"] = resolve_command(template.get("command"), out.get("command"), mapping)
         out["args"] = resolve_args(template.get("args"), out.get("args"), mapping)
     env = resolve_env(template.get("env", {}), out.get("env", {}), mapping)
@@ -179,11 +207,18 @@ def to_vscode_shape(template: dict[str, Any], existing: dict[str, Any] | None, m
     out = json.loads(json.dumps(existing or {}))
     t = template.get("type", "stdio")
     if t == "http" or "url" in template:
+        out.pop("command", None)
+        out.pop("args", None)
+        out.pop("env", None)
         out["type"] = "http"
         out["url"] = resolve_value(template.get("url"), mapping, out.get("url"))
-        if template.get("headers") is not None:
-            out.setdefault("headers", template.get("headers", {}))
+        if isinstance(template.get("headers"), dict):
+            headers = resolve_sensitive_mapping(template["headers"], out.get("headers", {}), mapping)
+            if headers:
+                out["headers"] = headers
     else:
+        out.pop("url", None)
+        out.pop("headers", None)
         out.pop("type", None)
         out["command"] = resolve_command(template.get("command"), out.get("command"), mapping)
         out["args"] = resolve_args(template.get("args"), out.get("args"), mapping)
@@ -197,24 +232,26 @@ def to_opencode_shape(template: dict[str, Any], existing: dict[str, Any] | None,
     out = json.loads(json.dumps(existing or {}))
     t = template.get("type", "stdio")
     if t == "http" or "url" in template:
+        out.pop("command", None)
+        out.pop("environment", None)
         out["type"] = "remote"
         out["url"] = resolve_value(template.get("url"), mapping, out.get("url"))
         out["enabled"] = out.get("enabled", True)
-        if template.get("headers"):
-            out.setdefault("headers", template["headers"])
+        if isinstance(template.get("headers"), dict):
+            headers = resolve_sensitive_mapping(template["headers"], out.get("headers", {}), mapping)
+            if headers:
+                out["headers"] = headers
     else:
+        out.pop("url", None)
+        out.pop("headers", None)
         out["type"] = "local"
         existing_cmd = out.get("command")
-        if isinstance(existing_cmd, list) and existing_cmd and not any(is_placeholder(x) for x in existing_cmd):
-            command = existing_cmd
-        else:
-            cmd = template.get("command", "")
-            args = resolve_args(template.get("args"), None, mapping)
-            if isinstance(cmd, list):
-                command = [resolve_value(c, mapping) for c in cmd]
-            else:
-                command = [resolve_value(cmd, mapping)] + list(args)
-            command = [c for c in command if c is not None and c != ""]
+        existing_first = existing_cmd[0] if isinstance(existing_cmd, list) and existing_cmd else None
+        existing_args = existing_cmd[1:] if isinstance(existing_cmd, list) else None
+        cmd = resolve_command(template.get("command", ""), existing_first, mapping)
+        args = resolve_args(template.get("args"), existing_args, mapping)
+        command = [cmd, *args]
+        command = [c for c in command if c is not None and c != ""]
         out["command"] = command
         out["enabled"] = out.get("enabled", True)
         env = resolve_env(
@@ -290,6 +327,10 @@ def merge_into(target_path: Path, canonical_path: Path) -> dict[str, int]:
             }
         if "args" in new_cfg:
             new_cfg["args"] = [a for a in new_cfg["args"] if not is_placeholder(a)]
+        if "headers" in new_cfg:
+            new_cfg["headers"] = {
+                k: v for k, v in new_cfg["headers"].items() if not is_placeholder(v)
+            }
         servers[existing_key] = new_cfg
         after = json.dumps(new_cfg, sort_keys=True)
         if before is None:

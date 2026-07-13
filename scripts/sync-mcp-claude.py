@@ -14,7 +14,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
@@ -129,8 +129,19 @@ def command_for(name: str, cfg: dict[str, Any], scope: str, donors: dict[str, st
 def main() -> int:
     dry_run = "--dry-run" in sys.argv
     argv = [arg for arg in sys.argv[1:] if arg != "--dry-run"]
+    retired_path: Optional[Path] = None
+    if "--retired" in argv:
+        index = argv.index("--retired")
+        if index + 1 >= len(argv):
+            print("--retired requires a file", file=sys.stderr)
+            return 1
+        retired_path = Path(argv[index + 1]).expanduser()
+        del argv[index : index + 2]
     if len(argv) != 1:
-        print(f"Usage: {sys.argv[0]} <canonical.json> [--dry-run]", file=sys.stderr)
+        print(
+            f"Usage: {sys.argv[0]} <canonical.json> [--retired file] [--dry-run]",
+            file=sys.stderr,
+        )
         return 1
 
     claude_bin = os.environ.get("CLAUDE_BIN", "claude")
@@ -139,17 +150,38 @@ def main() -> int:
     existing = configured_names(claude_bin) if not dry_run else set()
     donors = donor_maps()
 
-    added = skipped = existing_count = 0
+    retired: list[str] = []
+    if retired_path and retired_path.exists():
+        retired_doc = json.loads(retired_path.read_text(encoding="utf-8"))
+        retired = [str(name) for name in retired_doc.get("retiredServers", [])]
+    retired_removed = 0
+    for name in retired:
+        if not dry_run and name.lower() not in existing:
+            continue
+        remove_cmd = [claude_bin, "mcp", "remove", "--scope", scope, name]
+        if dry_run:
+            print("  would run: " + " ".join(shlex.quote(part) for part in remove_cmd))
+            retired_removed += 1
+        elif subprocess.run(remove_cmd, text=True, check=False).returncode == 0:
+            retired_removed += 1
+
+    added = skipped = existing_count = replaced = 0
     skipped_names: list[str] = []
     for name, cfg in (canonical.get("mcpServers") or {}).items():
-        if name.lower() in existing:
-            existing_count += 1
-            continue
         cmd = command_for(name, cfg, scope, donors.get(name.lower(), {}))
         if not cmd:
             skipped += 1
             skipped_names.append(name)
             continue
+        if name.lower() in existing:
+            existing_count += 1
+            remove_cmd = [claude_bin, "mcp", "remove", "--scope", scope, name]
+            result = subprocess.run(remove_cmd, text=True, check=False)
+            if result.returncode != 0:
+                skipped += 1
+                skipped_names.append(name)
+                continue
+            replaced += 1
         full_cmd = [claude_bin, *cmd]
         if dry_run:
             display = [shlex.quote(part) for part in full_cmd]
@@ -166,7 +198,10 @@ def main() -> int:
             skipped += 1
             skipped_names.append(name)
 
-    print(f"  claude mcp: +{added} existing={existing_count} skipped={skipped}")
+    print(
+        f"  claude mcp: +{added} replaced={replaced} "
+        f"retired={retired_removed} existing={existing_count} skipped={skipped}"
+    )
     if skipped_names:
         print("  skipped: " + ", ".join(skipped_names))
     return 0

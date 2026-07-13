@@ -1,135 +1,187 @@
 #!/usr/bin/env python3
-"""Append missing shared MCP servers to Codex config.toml (never overwrite existing)."""
+"""Converge Hub-managed MCP servers into Codex config.toml."""
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
+
 
 PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
-
-
-def existing_server_names(toml_text: str) -> set[str]:
-    return {m.group(1).lower() for m in re.finditer(r"^\[mcp_servers\.([^\].]+)\]", toml_text, re.M)}
-
-
-def toml_escape(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+TABLE_RE = re.compile(r"^\s*\[mcp_servers\.([^\.\]\s]+)(?:\.(env|headers|http_headers))?\]\s*$")
+MARKER = "# --- agent-hub shared MCP (managed) ---"
 
 
 def is_placeholder(value: object) -> bool:
     return isinstance(value, str) and bool(PLACEHOLDER_RE.match(value))
 
 
-def donor_maps() -> dict[str, dict[str, str]]:
-    """name.lower() -> {VAR: concrete value}"""
-    out: dict[str, dict[str, str]] = {}
-    for donor in (Path.home() / ".cursor" / "mcp.json", Path.home() / ".gemini" / "config" / "mcp_config.json"):
-        if not donor.exists():
+def parse_value(value: str) -> Any:
+    try:
+        return ast.literal_eval(value.strip())
+    except (SyntaxError, ValueError):
+        return value.strip()
+
+
+def parse_servers(text: str) -> dict[str, dict[str, Any]]:
+    servers: dict[str, dict[str, Any]] = {}
+    current: dict[str, Any] | None = None
+    section: str | None = None
+    for line in text.splitlines():
+        table = TABLE_RE.match(line)
+        if table:
+            name, section = table.groups()
+            current = servers.setdefault(name.lower(), {})
+            if section:
+                current.setdefault(section, {})
             continue
-        data = json.loads(donor.read_text(encoding="utf-8"))
-        for n, cfg in (data.get("mcpServers") or {}).items():
-            m = out.setdefault(n.lower(), {})
-            for k, v in (cfg.get("env") or {}).items():
-                if isinstance(v, str) and not is_placeholder(v):
-                    m[k] = v
-                    if k == "OUTPUT_DIR":
-                        m.setdefault("MINERU_OUTPUT_DIR", v)
-                    if k == "OPENAPI_MCP_HEADERS":
-                        m.setdefault("ANYTYPE_MCP_HEADERS", v)
-            for a in cfg.get("args") or []:
-                if isinstance(a, str) and ("Obsidian" in a or "KnowledgeBase" in a or "CloudStorage" in a):
-                    m.setdefault("OBSIDIAN_VAULT", a)
-    return out
+        if current is None or "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, raw = line.split("=", 1)
+        key = key.strip()
+        if section:
+            current[section][key] = parse_value(raw)
+        else:
+            current[key] = parse_value(raw)
+    return servers
 
 
-def resolve(value: object, mapping: dict[str, str]) -> object | None:
-    if is_placeholder(value):
-        key = PLACEHOLDER_RE.match(value).group(1)  # type: ignore[union-attr]
-        return mapping.get(key)
+def remove_server_blocks(text: str, names: set[str]) -> str:
+    out: list[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        table = TABLE_RE.match(line.rstrip("\r\n"))
+        if table:
+            skipping = table.group(1).lower() in names
+        if not skipping:
+            out.append(line)
+    result = "".join(out).replace(MARKER + "\n", "")
+    return re.sub(r"\n{3,}", "\n\n", result).rstrip() + "\n"
+
+
+def toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def placeholder_name(value: Any) -> str | None:
+    match = PLACEHOLDER_RE.match(value) if isinstance(value, str) else None
+    return match.group(1) if match else None
+
+
+def mapping_for(template: dict[str, Any], existing: dict[str, Any]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for section in ("env", "headers"):
+        template_values = template.get(section, {})
+        existing_values = existing.get(section, {}) or existing.get("http_headers", {})
+        if not isinstance(template_values, dict) or not isinstance(existing_values, dict):
+            continue
+        for key, value in template_values.items():
+            variable = placeholder_name(value)
+            concrete = existing_values.get(key)
+            if variable and isinstance(concrete, str) and not is_placeholder(concrete):
+                mapping[variable] = concrete
+    return mapping
+
+
+def resolve(value: Any, mapping: dict[str, str], existing: Any = None) -> Any | None:
+    variable = placeholder_name(value)
+    if variable:
+        if variable in mapping:
+            return mapping[variable]
+        if existing is not None and not is_placeholder(existing):
+            return existing
+        return None
     return value
 
 
-def render_server(name: str, cfg: dict, mapping: dict[str, str]) -> str | None:
-    lines: list[str] = []
-    t = cfg.get("type", "stdio")
-    if t == "http" or "url" in cfg:
-        url = resolve(cfg.get("url"), mapping)
+def render_server(name: str, template: dict[str, Any], existing: dict[str, Any]) -> str:
+    mapping = mapping_for(template, existing)
+    lines = [f"[mcp_servers.{name}]"]
+    typ = template.get("type", "stdio")
+    if typ == "http" or template.get("url"):
+        url = resolve(template.get("url"), mapping, existing.get("url"))
         if not url:
-            return None
-        lines.append(f"[mcp_servers.{name}]")
-        lines.append(f'url = "{toml_escape(str(url))}"')
-        lines.append("")
+            raise ValueError(f"unresolved URL for {name}")
+        lines.extend((f'url = "{toml_escape(str(url))}"', ""))
+        headers: dict[str, Any] = {}
+        existing_headers = existing.get("headers", {}) or existing.get("http_headers", {})
+        for key, value in (template.get("headers") or {}).items():
+            resolved = resolve(value, mapping, existing_headers.get(key))
+            if resolved is not None:
+                headers[key] = resolved
+        for key, value in existing_headers.items():
+            headers.setdefault(key, value)
+        if headers:
+            lines.append(f"[mcp_servers.{name}.http_headers]")
+            lines.extend(f'{key} = "{toml_escape(str(value))}"' for key, value in headers.items())
+            lines.append("")
         return "\n".join(lines)
 
-    cmd = resolve(cfg.get("command", ""), mapping)
-    if not cmd:
-        return None
-    lines.append(f"[mcp_servers.{name}]")
-    lines.append(f'command = "{toml_escape(str(cmd))}"')
-    args = []
-    for a in cfg.get("args") or []:
-        ra = resolve(a, mapping)
-        if ra is None:
-            continue
-        args.append(ra)
-    if args:
-        args_lit = ", ".join(f'"{toml_escape(str(a))}"' for a in args)
-        lines.append(f"args = [{args_lit}]")
-    else:
-        lines.append("args = []")
-    lines.append("")
+    command = template.get("command", "")
+    if isinstance(existing.get("command"), str) and existing["command"].startswith("/"):
+        command = existing["command"]
+    command = resolve(command, mapping, existing.get("command"))
+    if not command:
+        raise ValueError(f"unresolved command for {name}")
+    lines.append(f'command = "{toml_escape(str(command))}"')
+    args: list[Any] = []
+    existing_args = existing.get("args") if isinstance(existing.get("args"), list) else []
+    for index, value in enumerate(template.get("args") or []):
+        old = existing_args[index] if index < len(existing_args) else None
+        resolved = resolve(value, mapping, old)
+        if resolved is not None:
+            args.append(resolved)
+    args_text = ", ".join(f'"{toml_escape(str(value))}"' for value in args)
+    lines.extend((f"args = [{args_text}]", ""))
 
-    env = {}
-    for k, v in (cfg.get("env") or {}).items():
-        rv = resolve(v, mapping)
-        if rv is not None and not is_placeholder(rv):
-            env[k] = rv
-    # map MINERU_OUTPUT_DIR -> OUTPUT_DIR for mineru
-    if "OUTPUT_DIR" not in env and "MINERU_OUTPUT_DIR" in mapping:
-        env["OUTPUT_DIR"] = mapping["MINERU_OUTPUT_DIR"]
+    env: dict[str, Any] = {}
+    existing_env = existing.get("env", {}) if isinstance(existing.get("env"), dict) else {}
+    for key, value in (template.get("env") or {}).items():
+        resolved = resolve(value, mapping, existing_env.get(key))
+        if resolved is not None:
+            env[key] = resolved
+    for key, value in existing_env.items():
+        env.setdefault(key, value)
     if env:
         lines.append(f"[mcp_servers.{name}.env]")
-        for k, v in env.items():
-            lines.append(f'{k} = "{toml_escape(str(v))}"')
+        lines.extend(f'{key} = "{toml_escape(str(value))}"' for key, value in env.items())
         lines.append("")
     return "\n".join(lines)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as handle:
+        handle.write(text)
+        tmp = Path(handle.name)
+    tmp.replace(path)
 
 
 def main() -> int:
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <canonical.json> <config.toml>", file=sys.stderr)
         return 1
-
     canonical = json.loads(Path(sys.argv[1]).expanduser().read_text(encoding="utf-8"))
+    templates = canonical.get("mcpServers", {})
     target = Path(sys.argv[2]).expanduser()
     text = target.read_text(encoding="utf-8") if target.exists() else ""
-    have = existing_server_names(text)
-    donors = donor_maps()
-
-    added = 0
-    blocks: list[str] = []
-    for name, cfg in (canonical.get("mcpServers") or {}).items():
-        if name.lower() in have:
-            continue
-        block = render_server(name, cfg, donors.get(name.lower(), {}))
-        if not block:
-            continue
-        blocks.append(block)
-        added += 1
-
-    if not blocks:
-        print("  config.toml: +0 (all shared servers already present)")
-        return 0
-
-    if text and not text.endswith("\n"):
-        text += "\n"
-    text += "\n# --- agent-hub shared MCP (auto-appended) ---\n"
-    text += "\n".join(blocks)
-    target.write_text(text, encoding="utf-8")
-    print(f"  config.toml: +{added} appended")
+    existing = parse_servers(text)
+    names = {name.lower() for name in templates}
+    base = remove_server_blocks(text, names) if text else ""
+    blocks = [render_server(name, cfg, existing.get(name.lower(), {})) for name, cfg in templates.items()]
+    output = base.rstrip()
+    if blocks:
+        output += ("\n\n" if output else "") + MARKER + "\n" + "\n".join(blocks)
+    output = output.rstrip() + "\n"
+    atomic_write(target, output)
+    print(f"  config.toml: converged={len(blocks)}")
     return 0
 
 
