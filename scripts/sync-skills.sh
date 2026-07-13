@@ -97,8 +97,8 @@ while IFS= read -r s; do
 done < <(read_skill_list)
 
 if [ "${#SKILLS[@]}" -eq 0 ]; then
-    echo "No skills listed in $MANIFEST (skills: or math_skills:)" >&2
-    exit 1
+    echo "No shared Skills listed in $MANIFEST — skip."
+    exit 0
 fi
 
 echo "━━━ agent-sync skills ($METHOD) ━━━"

@@ -10,6 +10,8 @@ CANONICAL="$HUB_ROOT/mcp/shared-servers.json"
 MERGE_PY="$SYNC_HOME/scripts/merge-mcp.py"
 MERGE_CODEX="$SYNC_HOME/scripts/merge-mcp-codex.py"
 MERGE_CLAUDE="$SYNC_HOME/scripts/sync-mcp-claude.py"
+PRUNE_PY="$SYNC_HOME/scripts/prune-retired-mcp.py"
+RETIRED="$HUB_ROOT/mcp/retired-servers.json"
 
 if [ ! -f "$CANONICAL" ]; then
     echo "Missing $CANONICAL" >&2
@@ -31,6 +33,7 @@ for entry in "${TARGETS[@]}"; do
     label="${entry%%|*}"
     target="${entry#*|}"
     echo "[mcp] → $label ($target)"
+    python3 "$PRUNE_PY" "$RETIRED" "$target"
     python3 "$MERGE_PY" "$CANONICAL" "$target"
 done
 
@@ -39,15 +42,17 @@ if [ -d "$VSCODE_PROFILES" ]; then
     while IFS= read -r profile; do
         target="$profile/mcp.json"
         echo "[mcp] → VSCode profile ($(basename "$profile")) ($target)"
+        python3 "$PRUNE_PY" "$RETIRED" "$target"
         python3 "$MERGE_PY" "$CANONICAL" "$target"
     done < <(find "$VSCODE_PROFILES" -mindepth 1 -maxdepth 1 -type d | sort)
 fi
 
 echo "[mcp] → Codex ($HOME/.codex/config.toml)"
+python3 "$PRUNE_PY" "$RETIRED" "$HOME/.codex/config.toml"
 python3 "$MERGE_CODEX" "$CANONICAL" "$HOME/.codex/config.toml"
 
 echo "[mcp] → Claude Code (claude mcp, user scope)"
-python3 "$MERGE_CLAUDE" "$CANONICAL"
+python3 "$MERGE_CLAUDE" "$CANONICAL" --retired "$RETIRED"
 
 echo ""
-echo "  Codex: append-only for missing shared servers."
+echo "  Shared MCP structure converged; local secrets and tool-only servers preserved."
