@@ -126,9 +126,37 @@ class AgentDoctorTests(unittest.TestCase):
     def test_claude_mcp_sync_resolves_shared_placeholder_from_cursor(self):
         cursor = self.home / ".cursor"
         cursor.mkdir()
-        (cursor / "mcp.json").write_text(json.dumps({"mcpServers": {"shared": {"command": "shared-mcp", "env": {"OPENAPI_MCP_HEADERS": "donor-value"}}}}))
+        (cursor / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "shared-mcp",
+                            "env": {
+                                "OPENAPI_MCP_HEADERS": "donor-value",
+                                "OUTPUT_DIR": "donor-output",
+                            },
+                        }
+                    }
+                }
+            )
+        )
         canonical = self.tempdir.name + "/shared.json"
-        Path(canonical).write_text(json.dumps({"mcpServers": {"shared": {"command": "shared-mcp", "env": {"OPENAPI_MCP_HEADERS": "${ANYTYPE_MCP_HEADERS}"}}}}))
+        Path(canonical).write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "shared-mcp",
+                            "env": {
+                                "OPENAPI_MCP_HEADERS": "${ANYTYPE_MCP_HEADERS}",
+                                "OUTPUT_DIR": "${SHARED_OUTPUT_DIR}",
+                            },
+                        }
+                    }
+                }
+            )
+        )
         log = Path(self.tempdir.name) / "claude.log"
         fake_claude = Path(self.tempdir.name) / "claude"
         fake_claude.write_text(f'#!/bin/sh\n[ "$3" = "list" ] && exit 0\nprintf "%s\\n" "$*" > "{log}"\n')
@@ -137,6 +165,7 @@ class AgentDoctorTests(unittest.TestCase):
         subprocess.run(["python3", str(SYNC_CLAUDE_MCP), canonical], env=env, check=True, capture_output=True, text=True)
 
         self.assertIn("OPENAPI_MCP_HEADERS=donor-value", log.read_text())
+        self.assertIn("OUTPUT_DIR=donor-output", log.read_text())
 
     def test_vscode_profile_without_mcp_is_reported_and_synced(self):
         profile = self.home / "Library" / "Application Support" / "Code" / "User" / "profiles" / "paper"

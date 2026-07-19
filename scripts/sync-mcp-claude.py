@@ -60,6 +60,8 @@ def concrete_env(env: dict[str, Any], donors: dict[str, str]) -> dict[str, str] 
     out: dict[str, str] = {}
     for k, v in env.items():
         value = resolve(v, donors)
+        if value is None and is_placeholder(v):
+            value = donors.get(str(k))
         if value is None:
             return None
         if str(value) != "":

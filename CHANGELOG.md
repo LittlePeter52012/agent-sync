@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.2 — 2026-07-19
+
+- Resolve Claude MCP environment placeholders from the concrete value already
+  stored under the target environment-variable name when the portable Hub
+  placeholder uses a different name.
+- This lets shared definitions such as `OUTPUT_DIR=${SERVICE_OUTPUT_DIR}`
+  converge without service-specific mapping code.
+
 ## 1.5.1 — 2026-07-19
 
 - Replace case-variant Claude MCP entries using the name actually registered
