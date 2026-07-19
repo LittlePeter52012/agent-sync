@@ -161,7 +161,10 @@ health, retired MCP residue, plugin/MCP scope drift, and duplicate synced rules.
 `doctor --runtime` adds bounded OpenCode and Claude CLI probes. Raw command
 output is discarded after status parsing. Reports never print MCP values,
 tokens, private configuration paths, cookies, or account/subscription
-information.
+information. The default bounds are 30 seconds for OpenCode and 90 seconds for
+Claude. Override them with `AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE` and
+`AGENT_SYNC_RUNTIME_TIMEOUT_CLAUDE`, or set
+`AGENT_SYNC_RUNTIME_TIMEOUT` for both.
 
 `fix` is intentionally narrow: it repairs missing sync coverage, removes retired
 Hub-managed MCP names, and normalizes managed rule blocks. Tool-only MCP servers

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.1 — 2026-07-19
+
+- Replace case-variant Claude MCP entries using the name actually registered
+  with the Claude CLI, so a legacy `MinerU` entry can converge to canonical
+  `mineru`.
+- Give OpenCode and Claude runtime probes independent bounded defaults to avoid
+  false timeouts from Claude's longer MCP health-check cycle.
+- Support `AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE` and
+  `AGENT_SYNC_RUNTIME_TIMEOUT_CLAUDE` overrides in addition to the shared
+  `AGENT_SYNC_RUNTIME_TIMEOUT`.
+
 ## 1.5.0 — 2026-07-19
 
 - Add optional per-Agent allowlists and required lists for intentional

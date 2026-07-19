@@ -416,17 +416,27 @@ def failed_runtime_names(tool: str, output: str) -> list[str]:
 def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
     """Run bounded, read-only CLI probes and keep only sanitized outcomes."""
     probes = [
-        ("OpenCode", "opencode", ["mcp", "list"]),
-        ("Claude", "claude", ["mcp", "list"]),
+        ("OpenCode", "opencode", ["mcp", "list"], 30),
+        ("Claude", "claude", ["mcp", "list"], 90),
     ]
     findings: list[dict[str, str]] = []
     checked: list[str] = []
-    timeout = max(1, int(os.environ.get("AGENT_SYNC_RUNTIME_TIMEOUT", "20")))
-    for label, executable, arguments in probes:
+    common_timeout = os.environ.get("AGENT_SYNC_RUNTIME_TIMEOUT")
+    for label, executable, arguments, default_timeout in probes:
         command = shutil.which(executable)
         if not command:
             continue
         checked.append(label)
+        tool_timeout = os.environ.get(
+            f"AGENT_SYNC_RUNTIME_TIMEOUT_{label.upper()}"
+        )
+        try:
+            timeout = max(
+                1,
+                int(tool_timeout or common_timeout or default_timeout),
+            )
+        except ValueError:
+            timeout = default_timeout
         try:
             result = subprocess.run(
                 [command, *arguments],

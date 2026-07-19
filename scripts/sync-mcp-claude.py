@@ -79,7 +79,7 @@ def concrete_args(args: list[Any], donors: dict[str, str]) -> list[str] | None:
     return out
 
 
-def configured_names(claude_bin: str) -> set[str]:
+def configured_names(claude_bin: str) -> dict[str, str]:
     try:
         result = subprocess.run(
             [claude_bin, "mcp", "list"],
@@ -89,12 +89,13 @@ def configured_names(claude_bin: str) -> set[str]:
             check=False,
         )
     except FileNotFoundError:
-        return set()
+        return {}
 
-    names: set[str] = set()
+    names: dict[str, str] = {}
     for line in result.stdout.splitlines():
         if ":" in line and not line.startswith("Checking "):
-            names.add(line.split(":", 1)[0].strip().lower())
+            configured = line.split(":", 1)[0].strip()
+            names[configured.lower()] = configured
     return names
 
 
@@ -159,7 +160,15 @@ def main() -> int:
     for name in retired:
         if not dry_run and name.lower() not in existing:
             continue
-        remove_cmd = [claude_bin, "mcp", "remove", "--scope", scope, name]
+        configured_name = existing.get(name.lower(), name)
+        remove_cmd = [
+            claude_bin,
+            "mcp",
+            "remove",
+            "--scope",
+            scope,
+            configured_name,
+        ]
         if dry_run:
             print("  would run: " + " ".join(shlex.quote(part) for part in remove_cmd))
             retired_removed += 1
@@ -176,7 +185,14 @@ def main() -> int:
             continue
         if name.lower() in existing:
             existing_count += 1
-            remove_cmd = [claude_bin, "mcp", "remove", "--scope", scope, name]
+            remove_cmd = [
+                claude_bin,
+                "mcp",
+                "remove",
+                "--scope",
+                scope,
+                existing[name.lower()],
+            ]
             result = subprocess.run(remove_cmd, text=True, check=False)
             if result.returncode != 0:
                 skipped += 1

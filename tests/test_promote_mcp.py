@@ -508,6 +508,34 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("mcp remove --scope user shared", calls)
         self.assertIn("mcp add --scope user shared -- new-command", calls)
 
+    def test_claude_sync_replaces_case_variant_using_configured_name(self):
+        canonical = self.hub / "mcp" / "merge-claude.json"
+        canonical.write_text(
+            json.dumps({"mcpServers": {"mineru": {"command": "new-command"}}}),
+            encoding="utf-8",
+        )
+        log = Path(self.tempdir.name) / "claude.log"
+        fake_claude = Path(self.tempdir.name) / "claude"
+        fake_claude.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1 $2" = "mcp list" ]; then echo "MinerU: existing"; exit 0; fi\n'
+            f'printf "%s\\n" "$*" >> "{log}"\n',
+            encoding="utf-8",
+        )
+        fake_claude.chmod(0o755)
+
+        result = subprocess.run(
+            ["python3", str(SYNC_CLAUDE), str(canonical)],
+            env=os.environ | {"HOME": str(self.home), "CLAUDE_BIN": str(fake_claude)},
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = log.read_text()
+        self.assertIn("mcp remove --scope user MinerU", calls)
+        self.assertIn("mcp add --scope user mineru -- new-command", calls)
+
     def test_sync_mcp_prunes_retired_names_before_distribution(self):
         (self.hub / "mcp" / "retired-servers.json").write_text(
             json.dumps({"retiredServers": ["old-shared"]}), encoding="utf-8"

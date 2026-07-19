@@ -242,6 +242,36 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("OpenCode", messages)
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
 
+    def test_doctor_runtime_supports_tool_specific_timeout(self):
+        fake_bin = Path(self.tempdir.name) / "bin"
+        fake_bin.mkdir()
+        opencode = fake_bin / "opencode"
+        opencode.write_text(
+            "#!/bin/sh\nsleep 2\nprintf 'healthy: connected\\n'\n",
+            encoding="utf-8",
+        )
+        opencode.chmod(0o755)
+        claude = fake_bin / "claude"
+        claude.write_text(
+            "#!/bin/sh\nprintf 'healthy: command - connected\\n'\n",
+            encoding="utf-8",
+        )
+        claude.chmod(0o755)
+
+        result = self.run_doctor(
+            "--runtime",
+            extra_env={
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "AGENT_SYNC_RUNTIME_TIMEOUT": "1",
+                "AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE": "3",
+            },
+        )
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertNotIn("timed out for OpenCode", messages)
+
     def test_doctor_audits_required_and_forbidden_plugin_scope(self):
         policy = self.hub / "policies"
         policy.mkdir()
