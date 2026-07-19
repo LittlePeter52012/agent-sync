@@ -162,9 +162,15 @@ def resolve_args(template_args: list[Any] | None, existing_args: list[Any] | Non
 
 
 def resolve_command(template_cmd: Any, existing_cmd: Any, mapping: dict[str, str]) -> Any:
-    if isinstance(existing_cmd, str) and existing_cmd.startswith("/"):
+    resolved = resolve_value(template_cmd, mapping, existing_cmd)
+    if (
+        isinstance(existing_cmd, str)
+        and existing_cmd.startswith("/")
+        and isinstance(resolved, str)
+        and Path(existing_cmd).name == Path(resolved).name
+    ):
         return existing_cmd
-    return resolve_value(template_cmd, mapping, existing_cmd)
+    return resolved
 
 
 def resolve_sensitive_mapping(

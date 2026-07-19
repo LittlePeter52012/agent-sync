@@ -5,7 +5,7 @@
 # (default: ~/.config/agent-hub), not in this repository.
 #
 # Usage:
-#   agent-sync sync|skills|mcp|rules|all|list|verify|test|status|doctor|fix|bench|update|push|help
+#   agent-sync sync|sources|trace|skills|mcp|rules|all|list|verify|test|status|doctor|fix|bench|update|push|help
 #
 # Environment:
 #   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
@@ -41,15 +41,18 @@ agent-sync — sync Agent Skills, MCP servers, and rules across AI tools
 Commands:
   sync [--from TOOL] [--dry-run|--yes]
                      Hub → all tools, or TOOL → Hub → all tools
+  sources [--json]   Rank local MCP configs as promotion candidates
+  trace mcp NAME     Show secret-free MCP ownership and locations
   skills [--force]   Symlink whitelist skills from hub to all tools
   mcp                Merge shared MCP into tool configs (keeps tool-only servers)
   rules              Inject rule blocks into CLAUDE/AGENTS/GEMINI/Copilot
   all [--force]      skills + mcp + rules + verify
   list               Show whitelist and coverage matrix
-  verify             Structural checks
+  verify [--strict]  Structural checks; strict also runs runtime doctor
   test               Full evaluation suite
   status             Status overview
-  doctor [--json]    Local agent capability and sync health report
+  doctor [--json] [--runtime] [--strict]
+                     Local capability, configuration, and runtime health report
   fix [--dry-run]    Safely repair missing sync coverage and duplicate rules
   bench              Symlink vs rsync comparison
   init               Create a minimal personal hub from examples
@@ -149,6 +152,14 @@ case "$cmd" in
         run_full_sync
         exec python3 "$SCRIPTS/agent-doctor.py"
         ;;
+    sources)
+        require_hub
+        exec python3 "$SCRIPTS/source-advisor.py" "$@"
+        ;;
+    trace)
+        require_hub
+        exec python3 "$SCRIPTS/trace-config.py" "$@"
+        ;;
     skills)
         require_hub
         bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
@@ -172,7 +183,15 @@ case "$cmd" in
         ;;
     verify)
         require_hub
-        bash "$SCRIPTS/verify-all.sh"
+        if [ $# -eq 0 ]; then
+            exec bash "$SCRIPTS/verify-all.sh"
+        fi
+        if [ "$#" -eq 1 ] && [ "$1" = "--strict" ]; then
+            bash "$SCRIPTS/verify-all.sh"
+            exec python3 "$SCRIPTS/agent-doctor.py" --runtime --strict
+        fi
+        echo "Unknown verify option: ${1:-}" >&2
+        usage 1
         ;;
     test)
         require_hub

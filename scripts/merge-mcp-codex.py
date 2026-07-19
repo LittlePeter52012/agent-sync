@@ -131,10 +131,15 @@ def render_server(name: str, template: dict[str, Any], existing: dict[str, Any])
             lines.append("")
         return "\n".join(lines)
 
-    command = template.get("command", "")
-    if isinstance(existing.get("command"), str) and existing["command"].startswith("/"):
-        command = existing["command"]
-    command = resolve(command, mapping, existing.get("command"))
+    command = resolve(template.get("command", ""), mapping, existing.get("command"))
+    existing_command = existing.get("command")
+    if (
+        isinstance(existing_command, str)
+        and existing_command.startswith("/")
+        and isinstance(command, str)
+        and Path(existing_command).name == Path(command).name
+    ):
+        command = existing_command
     if not command:
         raise ValueError(f"unresolved command for {name}")
     lines.append(f'command = "{toml_escape(str(command))}"')

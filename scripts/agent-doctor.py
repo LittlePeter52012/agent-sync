@@ -8,8 +8,11 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
+
+from config_inventory import collect_inventory
 
 
 HOME = Path.home()
@@ -138,13 +141,217 @@ def mcp_usability_findings() -> list[dict[str, str]]:
             continue
         present = Path(command).exists() if command.startswith("/") else bool(shutil.which(command))
         if not present:
+            command_name = command.replace("\\", "/").rsplit("/", 1)[-1]
             findings.append(
                 {
                     "severity": "attention",
-                    "message": f"Missing MCP executable for {server_name}: {command}",
+                    "message": f"Missing MCP executable for {server_name}: {command_name}",
                 }
             )
     return findings
+
+
+def configured_mcp_findings() -> list[dict[str, str]]:
+    """Audit every configured MCP, including tool-only and retired entries."""
+    findings: list[dict[str, str]] = []
+    for record in collect_inventory(HOME, HUB):
+        if record["parse_error"]:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"{record['label']} MCP configuration is invalid.",
+                }
+            )
+        for name in record["missing_commands"]:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Missing MCP executable for {record['label']}/{name}.",
+                }
+            )
+        for name in record["retired"]:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Retired MCP still configured in {record['label']}: {name}",
+                }
+            )
+    return findings
+
+
+def normalize_plugin_spec(value: str) -> str:
+    if value.startswith("@"):
+        marker = value.find("@", 1)
+        return value if marker < 0 else value[:marker]
+    return value.split("@", 1)[0]
+
+
+def opencode_plugins() -> set[str]:
+    path = HOME / ".config" / "opencode" / "opencode.json"
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    values = data.get("plugin", []) if isinstance(data, dict) else []
+    return {
+        normalize_plugin_spec(value)
+        for value in values
+        if isinstance(value, str)
+    }
+
+
+def codex_plugins() -> set[str]:
+    path = HOME / ".codex" / "config.toml"
+    if not path.exists():
+        return set()
+    text = path.read_text(encoding="utf-8")
+    plugins: set[str] = set()
+    pattern = re.compile(
+        r'^\[plugins\."([^"]+)"\]\s*$([\s\S]*?)(?=^\[|\Z)',
+        re.M,
+    )
+    for match in pattern.finditer(text):
+        body = match.group(2)
+        if re.search(r"^enabled\s*=\s*false\s*$", body, re.M):
+            continue
+        plugins.add(match.group(1))
+    return plugins
+
+
+def plugin_scope_findings() -> list[dict[str, str]]:
+    path = HUB / "policies" / "tool-scopes.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [
+            {
+                "severity": "attention",
+                "message": "Tool scope policy is invalid JSON.",
+            }
+        ]
+    policies = data.get("plugins", {}) if isinstance(data, dict) else {}
+    if not isinstance(policies, dict):
+        return [
+            {
+                "severity": "attention",
+                "message": "Tool scope policy has an invalid plugins section.",
+            }
+        ]
+    inventories = {
+        "opencode": opencode_plugins(),
+        "codex": codex_plugins(),
+    }
+    labels = {"opencode": "OpenCode", "codex": "Codex / ChatGPT"}
+    findings: list[dict[str, str]] = []
+    for tool, policy in policies.items():
+        if tool not in inventories or not isinstance(policy, dict):
+            continue
+        installed = inventories[tool]
+        for plugin in policy.get("required", []):
+            if isinstance(plugin, str) and normalize_plugin_spec(plugin) not in installed:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": f"Required plugin missing from {labels[tool]}: {plugin}",
+                    }
+                )
+        for plugin in policy.get("forbidden", []):
+            if not isinstance(plugin, str):
+                continue
+            normalized = normalize_plugin_spec(plugin)
+            if plugin in installed or normalized in installed:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": f"Forbidden plugin configured in {labels[tool]}: {plugin}",
+                    }
+                )
+    return findings
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def failed_runtime_names(tool: str, output: str) -> list[str]:
+    names: set[str] = set()
+    for raw_line in output.splitlines():
+        line = ANSI_RE.sub("", raw_line)
+        if tool == "OpenCode":
+            match = re.search(
+                r"(?:^|\s)(?:x|✗|×)\s+([A-Za-z0-9_.:-]+).*?\bfailed\b",
+                line,
+                re.I,
+            )
+        else:
+            match = re.search(
+                r"^\s*([A-Za-z0-9_.-]+):.*\b(?:failed|error)\b",
+                line,
+                re.I,
+            )
+        if match:
+            names.add(match.group(1))
+    return sorted(names)
+
+
+def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
+    """Run bounded, read-only CLI probes and keep only sanitized outcomes."""
+    probes = [
+        ("OpenCode", "opencode", ["mcp", "list"]),
+        ("Claude", "claude", ["mcp", "list"]),
+    ]
+    findings: list[dict[str, str]] = []
+    checked: list[str] = []
+    timeout = max(1, int(os.environ.get("AGENT_SYNC_RUNTIME_TIMEOUT", "20")))
+    for label, executable, arguments in probes:
+        command = shutil.which(executable)
+        if not command:
+            continue
+        checked.append(label)
+        try:
+            result = subprocess.run(
+                [command, *arguments],
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Runtime MCP probe timed out for {label}.",
+                }
+            )
+            continue
+        except OSError:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Runtime MCP probe could not start for {label}.",
+                }
+            )
+            continue
+        output = result.stdout + "\n" + result.stderr
+        failed = failed_runtime_names(label, output)
+        for name in failed:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Runtime MCP connection failed in {label}: {name}",
+                }
+            )
+        if result.returncode and not failed:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Runtime MCP probe failed for {label}.",
+                }
+            )
+    return findings, checked
 
 
 def json_object_keys(path: Path, key: str) -> set[str]:
@@ -261,11 +468,20 @@ def rule_findings() -> list[dict[str, str]]:
     return findings
 
 
-def build_report() -> dict[str, Any]:
+def build_report(runtime: bool = False) -> dict[str, Any]:
     skills = read_manifest_skills()
     shared = read_shared_mcp()
     agents = target_records(skills, shared)
-    findings = rule_findings() + mcp_usability_findings()
+    findings = (
+        rule_findings()
+        + mcp_usability_findings()
+        + configured_mcp_findings()
+        + plugin_scope_findings()
+    )
+    runtime_checked: list[str] = []
+    if runtime:
+        runtime_findings, runtime_checked = runtime_mcp_findings()
+        findings.extend(runtime_findings)
     for agent in agents:
         if agent["name"] != "Agents" and not agent["config_present"]:
             findings.append({"severity": "attention", "message": f"{agent['name']} is supported but has no local configuration."})
@@ -276,7 +492,12 @@ def build_report() -> dict[str, Any]:
         for profile in agent.get("profiles", []):
             if profile["mcp"]["configured"] != profile["mcp"]["expected"]:
                 findings.append({"severity": "attention", "message": f"VS Code profile {profile['id']} shared MCP coverage is incomplete."})
-    return {"overall": "ATTENTION" if findings else "HEALTHY", "agents": agents, "findings": findings}
+    return {
+        "overall": "ATTENTION" if findings else "HEALTHY",
+        "agents": agents,
+        "findings": findings,
+        "runtime_checked": runtime_checked,
+    }
 
 
 def marker(value: bool) -> str:
@@ -310,13 +531,15 @@ def render(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--runtime", action="store_true")
+    parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
-    report = build_report()
+    report = build_report(runtime=args.runtime)
     if args.as_json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print(render(report))
-    return 0
+    return 1 if args.strict and report["findings"] else 0
 
 
 if __name__ == "__main__":

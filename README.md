@@ -24,18 +24,24 @@ ln -sf ~/.local/share/agent-sync/bin/agent-sync ~/.local/bin/agent-sync
 
 ## Quick start
 
-If one Agent tool is already configured the way you want, adopt it and sync
-everything in one command:
+If one Agent tool is already configured the way you want, ask Agent Sync to
+rank the available sources, preview the recommended source, and then promote it:
 
 ```bash
+agent-sync sources
+agent-sync sync --from vscode --dry-run
 agent-sync sync --from vscode
 ```
 
 Supported sources are `vscode`, `cursor`, `antigravity`, `opencode`, `codex`,
-and `claude`. The command shows added, changed, removed, and unchanged MCP names
-before asking for confirmation. It creates a minimal private Hub automatically
-on first use, then distributes Skills, MCP servers, and Rules to all supported
-tools.
+and `claude`. `sources` is read-only: healthy configurations rank before broken
+ones, shared-MCP coverage ranks first, lower tool-only drift ranks second,
+top-level tools rank before profile replicas, and modification time is only a
+final tie-breaker. Agent Sync never promotes a source automatically.
+
+`sync --from` shows added, changed, removed, and unchanged MCP names before
+asking for confirmation. It creates a minimal private Hub automatically on first
+use, then distributes Skills, MCP servers, and Rules to all supported tools.
 
 If you prefer to build the private Hub directly:
 
@@ -49,8 +55,8 @@ agent-sync sync
 
 ```mermaid
 flowchart TB
-    SOURCE["1 · Choose the Agent that already works<br/>VS Code · Cursor · Codex · OpenCode · Claude · Antigravity"]
-    PROMOTE["2 · agent-sync sync --from TOOL<br/>Preview changes → Confirm once"]
+    SOURCE["1 · agent-sync sources<br/>Static health → Shared coverage → Low drift → Timestamp"]
+    PROMOTE["2 · agent-sync sync --from TOOL<br/>Explicit preview → Confirm once"]
     HUB[("3 · Private Agent Hub<br/>Skills · MCP · Rules<br/>Single source of truth")]
     SYNC["4 · agent-sync sync<br/>Distribute and convert for every tool"]
     TARGETS["Claude · Codex / ChatGPT · Cursor<br/>Gemini / Antigravity · OpenCode · VS Code / Copilot"]
@@ -82,6 +88,7 @@ There are only three normal workflows:
 
 ```bash
 agent-sync sync                         # Hub → every Agent
+agent-sync sources                      # rank safe MCP source candidates
 agent-sync sync --from vscode           # VS Code → Hub → every Agent
 agent-sync fix                          # repair deterministic issues and verify
 ```
@@ -97,8 +104,6 @@ original full Hub-to-tools workflow.
 | **agent-sync** (this repo) | Sync CLI + merge logic | `~/.local/share/agent-sync` | Public |
 | **Personal hub** | Your skills / MCP / rules | `~/.config/agent-hub` | **Private** (your choice) |
 
-```
-
 ### Privacy boundary
 
 - The **public agent-sync repository** contains only the synchronizer, generic
@@ -109,6 +114,8 @@ original full Hub-to-tools workflow.
   local Agent configurations; Hub definitions should use `${ENV}` placeholders.
 - `agent-sync push` runs the privacy audit before staging or pushing Hub files.
   Normal `sync` never copies private Hub content into the public tool repository.
+
+```text
 ~/.local/share/agent-sync/     ← tool (public)
 ~/.config/agent-hub/           ← YOUR configs (keep private)
     manifest.yaml
@@ -122,17 +129,21 @@ original full Hub-to-tools workflow.
 ```bash
 agent-sync init          # create hub from examples/
 agent-sync sync          # Hub → skills + MCP + rules + verify
+agent-sync sources       # rank local MCP configurations without changing them
 agent-sync sync --from vscode --dry-run
 agent-sync sync --from vscode # VS Code → Hub → all tools
+agent-sync trace mcp NAME # show shared/retired/tool-only ownership and locations
 agent-sync all           # backward-compatible alias for full Hub sync
 agent-sync skills        # symlink whitelist skills
 agent-sync mcp           # merge shared MCP (keeps tool-only servers)
 agent-sync rules         # inject rules/*.md
 agent-sync list          # coverage matrix
-agent-sync verify
+agent-sync verify        # structural verification
+agent-sync verify --strict # structural verification + runtime doctor
 agent-sync test
 agent-sync status
 agent-sync doctor        # local agent capabilities and sync-health report
+agent-sync doctor --runtime # add bounded OpenCode/Claude MCP probes
 agent-sync doctor --json # same report as safe, machine-readable JSON
 agent-sync fix --dry-run # preview safe local repairs without writing
 agent-sync fix           # sync missing coverage and normalize synced rules
@@ -145,13 +156,18 @@ agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
 ```
 
 `doctor` is local and read-only. It reports installed agent surfaces, configured
-model/provider names, skill and shared-MCP coverage, and duplicate synced rules.
-It never prints MCP values, tokens, paths from private configuration, cookies,
-or account/subscription information. `fix` is intentionally narrow: it repairs
-missing sync coverage, removes retired Hub-managed MCP names, and normalizes
-managed rule blocks. Tool-only MCP servers remain untouched. For shared MCP
-names, Hub command, URL, transport, and normal arguments are authoritative;
-existing local secrets and machine-specific absolute paths are preserved.
+model/provider names, skill and shared-MCP coverage, tool-only MCP executable
+health, retired MCP residue, plugin-scope drift, and duplicate synced rules.
+`doctor --runtime` adds bounded OpenCode and Claude CLI probes. Raw command
+output is discarded after status parsing. Reports never print MCP values,
+tokens, private configuration paths, cookies, or account/subscription
+information.
+
+`fix` is intentionally narrow: it repairs missing sync coverage, removes retired
+Hub-managed MCP names, and normalizes managed rule blocks. Tool-only MCP servers
+remain untouched. For shared MCP names, Hub command, URL, transport, and normal
+arguments are authoritative; existing local secrets and machine-specific
+absolute paths are preserved.
 
 For VS Code, `agent-sync mcp` merges shared MCP servers into the default user
 configuration and every existing VS Code Profile. Profile-specific MCP files
@@ -170,6 +186,32 @@ other tools on the next `sync`; servers that were never Hub-managed remain
 local. An empty, unreadable, or ambiguous source is rejected before any write.
 VS Code automatically selects its only non-builtin MCP Profile; when several
 Profiles qualify, choose one explicitly with `vscode:<profile-id>`.
+
+Do not choose a source by file modification time alone: a recently touched
+configuration may still contain a retired or broken MCP. Use `agent-sync
+sources`, inspect `agent-sync sync --from TOOL --dry-run`, and promote the
+source explicitly.
+
+### Optional tool-scope policy
+
+The private Hub can audit plugin ownership without installing or uninstalling
+anything. Put a policy at `policies/tool-scopes.json`:
+
+```json
+{
+  "plugins": {
+    "opencode": {
+      "required": ["example-opencode-plugin"]
+    },
+    "codex": {
+      "forbidden": ["example-plugin@example-marketplace"]
+    }
+  }
+}
+```
+
+`doctor` reports drift; each product's native plugin manager remains
+authoritative for changes.
 
 ### Auto-update (optional)
 
@@ -202,6 +244,8 @@ Environment:
   manifest.yaml              # skills whitelist
   skills/<name>/SKILL.md
   mcp/shared-servers.json    # shared MCP (use ${ENV} placeholders)
+  mcp/retired-servers.json   # shared MCP names intentionally removed
+  policies/tool-scopes.json  # optional required/forbidden plugin audit
   rules/*.md                 # injected into CLAUDE.md / AGENTS.md / GEMINI.md / Copilot
 ```
 

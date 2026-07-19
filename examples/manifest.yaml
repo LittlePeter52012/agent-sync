@@ -11,6 +11,9 @@ skills:
 # Optional: path to a primary rule file (all rules/*.md are injected)
 # rules_entry: rules/example-rule.md
 
+# Optional plugin ownership audit:
+# policies/tool-scopes.json
+
 # Optional auto-update (when running `agent-sync all`, once per day):
 # auto_update_check: true   # notify if tool update available
 # auto_update_apply: false  # auto git pull tool (default off — use agent-sync update)

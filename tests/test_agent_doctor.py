@@ -40,15 +40,17 @@ class AgentDoctorTests(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def run_doctor(self):
+    def run_doctor(self, *args, extra_env=None, check=True):
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
-            ["python3", str(DOCTOR), "--json"],
+            ["python3", str(DOCTOR), "--json", *args],
             cwd=REPO,
             env=env,
             text=True,
             capture_output=True,
-            check=True,
+            check=check,
         )
 
     def test_json_reports_synced_codex_without_secret_values(self):
@@ -164,7 +166,10 @@ class AgentDoctorTests(unittest.TestCase):
                 {
                     "mcpServers": {
                         "broken": {
-                            "command": "definitely-missing-mcp-command",
+                            "command": (
+                                "/private/TOKEN_SHOULD_NOT_APPEAR/"
+                                "definitely-missing-mcp-command"
+                            ),
                             "env": {"TOKEN": "${MISSING_TOKEN}"},
                         }
                     }
@@ -180,6 +185,111 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("MISSING_TOKEN", messages)
         self.assertIn("definitely-missing-mcp-command", messages)
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_reports_missing_tool_only_mcp_and_retired_residue(self):
+        (self.hub / "mcp" / "retired-servers.json").write_text(
+            json.dumps({"retiredServers": ["retired-tool"]}),
+            encoding="utf-8",
+        )
+        (self.home / ".claude.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "/bin/sh"},
+                        "broken-tool-only": {
+                            "command": "definitely-missing-tool-only-command",
+                        },
+                        "retired-tool": {"command": "/bin/sh"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(item["message"] for item in report["findings"])
+
+        self.assertIn("broken-tool-only", messages)
+        self.assertIn("retired-tool", messages)
+        self.assertIn("Claude", messages)
+
+    def test_doctor_runtime_reports_failed_mcp_without_raw_output(self):
+        fake_bin = Path(self.tempdir.name) / "bin"
+        fake_bin.mkdir()
+        opencode = fake_bin / "opencode"
+        opencode.write_text(
+            "#!/bin/sh\n"
+            "printf 'x stale-runtime failed TOKEN_SHOULD_NOT_APPEAR\\n'\n",
+            encoding="utf-8",
+        )
+        opencode.chmod(0o755)
+        claude = fake_bin / "claude"
+        claude.write_text(
+            "#!/bin/sh\nprintf 'healthy: command - connected\\n'\n",
+            encoding="utf-8",
+        )
+        claude.chmod(0o755)
+
+        result = self.run_doctor(
+            "--runtime",
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertIn("stale-runtime", messages)
+        self.assertIn("OpenCode", messages)
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_audits_required_and_forbidden_plugin_scope(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "opencode": {"required": ["required-plugin"]},
+                        "codex": {"forbidden": ["forbidden-plugin@market"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        opencode = self.home / ".config" / "opencode"
+        opencode.mkdir(parents=True)
+        (opencode / "opencode.json").write_text(
+            json.dumps({"plugin": ["another-plugin"], "mcp": {}}),
+            encoding="utf-8",
+        )
+        (self.home / ".codex" / "config.toml").write_text(
+            '[plugins."forbidden-plugin@market"]\nenabled = true\n',
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(item["message"] for item in report["findings"])
+
+        self.assertIn("required-plugin", messages)
+        self.assertIn("forbidden-plugin@market", messages)
+
+    def test_strict_runtime_exits_nonzero_when_findings_exist(self):
+        (self.home / ".claude.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "broken-tool-only": {
+                            "command": "definitely-missing-tool-only-command",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor("--strict", check=False)
+
+        self.assertEqual(result.returncode, 1)
 
 
 if __name__ == "__main__":

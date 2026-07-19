@@ -144,15 +144,28 @@ def parse_codex_servers(text: str) -> dict[str, dict[str, Any]]:
         if current is None or "=" not in line or line.lstrip().startswith("#"):
             continue
         key, raw = line.split("=", 1)
+        raw_value = raw.strip()
         try:
-            value = ast.literal_eval(raw.strip())
+            value = ast.literal_eval(raw_value)
         except (SyntaxError, ValueError):
-            value = raw.strip()
+            if raw_value == "true":
+                value = True
+            elif raw_value == "false":
+                value = False
+            else:
+                value = raw_value
         if section:
             current[section][key.strip()] = value
         else:
             current[key.strip()] = value
     return servers
+
+
+def config_enabled(config: dict[str, Any]) -> bool:
+    return (
+        config.get("enabled", True) is not False
+        and config.get("disabled", False) is not True
+    )
 
 
 def load_source(source: str, home: Path) -> tuple[str, dict[str, dict[str, Any]]]:
@@ -179,7 +192,7 @@ def load_source(source: str, home: Path) -> tuple[str, dict[str, dict[str, Any]]
     servers = {
         str(name): normalize_server(kind, cfg)
         for name, cfg in raw.items()
-        if isinstance(cfg, dict)
+        if isinstance(cfg, dict) and config_enabled(cfg)
     }
     if not servers:
         raise PromotionError("Source MCP configuration is empty; Hub was not changed")

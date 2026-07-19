@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "opencode": {
+      "required": []
+    },
+    "codex": {
+      "forbidden": []
+    }
+  }
+}

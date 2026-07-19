@@ -310,6 +310,96 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertEqual(servers["shared"]["env"]["TOKEN"], "local-secret")
         self.assertEqual(servers["tool-only"]["command"], "keep")
 
+    def test_json_merge_replaces_stale_absolute_command_when_command_changes(self):
+        canonical = self.hub / "mcp" / "merge-source.json"
+        canonical.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "new-command",
+                            "args": [],
+                            "env": {"TOKEN": "${TOKEN}"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        target = self.home / ".config" / "opencode" / "opencode.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "plugin": [],
+                    "model": "test",
+                    "mcp": {
+                        "shared": {
+                            "type": "local",
+                            "command": ["/usr/local/bin/old-command", "--old"],
+                            "environment": {"TOKEN": "local-secret"},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["python3", str(MERGE), str(canonical), str(target)],
+            env=os.environ | {"HOME": str(self.home)},
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shared = json.loads(target.read_text())["mcp"]["shared"]
+        self.assertEqual(shared["command"], ["new-command"])
+        self.assertEqual(shared["environment"]["TOKEN"], "local-secret")
+
+    def test_json_merge_preserves_absolute_path_when_command_identity_matches(self):
+        canonical = self.hub / "mcp" / "merge-source.json"
+        canonical.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "same-command",
+                            "args": ["--new"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        target = self.home / ".cursor" / "mcp.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "/usr/local/bin/same-command",
+                            "args": ["--old"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["python3", str(MERGE), str(canonical), str(target)],
+            env=os.environ | {"HOME": str(self.home)},
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shared = json.loads(target.read_text())["mcpServers"]["shared"]
+        self.assertEqual(shared["command"], "/usr/local/bin/same-command")
+        self.assertEqual(shared["args"], ["--new"])
+
     def test_codex_merge_replaces_shared_block_and_preserves_env_and_tool_only(self):
         canonical = self.hub / "mcp" / "merge-codex.json"
         canonical.write_text(
@@ -351,6 +441,43 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("[mcp_servers.tool-only]", text)
         self.assertIn("[features]", text)
         self.assertIn("web_search = true", text)
+        self.assertNotIn("old-command", text)
+
+    def test_codex_merge_replaces_stale_absolute_command_when_command_changes(self):
+        canonical = self.hub / "mcp" / "merge-codex.json"
+        canonical.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "new-command",
+                            "args": [],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        target = self.home / ".codex" / "config.toml"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            '[mcp_servers.shared]\n'
+            'command = "/usr/local/bin/old-command"\n'
+            'args = ["--old"]\n',
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["python3", str(MERGE_CODEX), str(canonical), str(target)],
+            env=os.environ | {"HOME": str(self.home)},
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = target.read_text()
+        self.assertIn('command = "new-command"', text)
+        self.assertIn("args = []", text)
         self.assertNotIn("old-command", text)
 
     def test_claude_sync_replaces_existing_shared_server(self):
@@ -483,6 +610,51 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertEqual(shared["command"], "codex-command")
         self.assertEqual(shared["args"], ["--codex"])
         self.assertEqual(shared["env"]["TOKEN"], "${TOKEN}")
+
+    def test_disabled_json_source_mcp_is_not_promoted(self):
+        antigravity = self.home / ".gemini" / "config"
+        antigravity.mkdir(parents=True)
+        (antigravity / "mcp_config.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "enabled": {"command": "enabled-command"},
+                        "disabled": {
+                            "command": "disabled-command",
+                            "disabled": True,
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_promote_source("antigravity", "--yes")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        servers = json.loads(self.canonical.read_text())["mcpServers"]
+        self.assertIn("enabled", servers)
+        self.assertNotIn("disabled", servers)
+
+    def test_disabled_codex_source_mcp_is_not_promoted(self):
+        codex = self.home / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "config.toml").write_text(
+            '[mcp_servers.enabled]\n'
+            'command = "enabled-command"\n'
+            "enabled = true\n\n"
+            '[mcp_servers.disabled]\n'
+            'command = "disabled-command"\n'
+            "enabled = false\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_promote_source("codex", "--yes")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        servers = json.loads(self.canonical.read_text())["mcpServers"]
+        self.assertIn("enabled", servers)
+        self.assertNotIn("disabled", servers)
 
     def test_sync_uses_existing_hub_as_source_of_truth(self):
         result = self.run_agent_sync("sync")
