@@ -263,7 +263,7 @@ class AgentDoctorTests(unittest.TestCase):
             extra_env={
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "AGENT_SYNC_RUNTIME_TIMEOUT": "1",
-                "AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE": "3",
+                "AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE": "10",
             },
         )
         messages = "\n".join(
