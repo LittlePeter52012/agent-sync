@@ -273,6 +273,98 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("required-plugin", messages)
         self.assertIn("forbidden-plugin@market", messages)
 
+    def test_doctor_audits_tool_only_mcp_scope(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "cursor": {
+                            "allowed_tool_only": ["cursor-native"],
+                            "required_tool_only": ["cursor-native"],
+                        },
+                        "codex": {
+                            "allowed_tool_only": ["llm_for_zotero"],
+                            "required_tool_only": ["llm_for_zotero"],
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        cursor = self.home / ".cursor"
+        cursor.mkdir()
+        (cursor / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "/bin/sh"},
+                        "cursor-native": {"command": "/bin/sh"},
+                        "accidental-tool": {
+                            "command": "/bin/sh",
+                            "env": {"TOKEN": "TOKEN_SHOULD_NOT_APPEAR"},
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.home / ".codex" / "config.toml").write_text(
+            '[mcp_servers.shared]\ncommand = "/bin/sh"\n'
+            '[mcp_servers.llm_for_zotero]\n'
+            'url = "http://127.0.0.1:23119/llm-for-zotero/mcp"\n'
+            '[mcp_servers.llm_for_zotero.http_headers]\n'
+            'Authorization = "Bearer TOKEN_SHOULD_NOT_APPEAR"\n',
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor()
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertIn("Unexpected tool-only MCP in Cursor: accidental-tool", messages)
+        self.assertNotIn("cursor-native", messages)
+        self.assertNotIn("llm_for_zotero", messages)
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_reports_invalid_tool_only_mcp_policy(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "codex": {
+                            "allowed_tool_only": ["allowed-native"],
+                            "required_tool_only": [
+                                "allowed-native",
+                                "missing-native",
+                            ],
+                        },
+                        "cursor": {
+                            "allowed_tool_only": "not-a-list",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(item["message"] for item in report["findings"])
+
+        self.assertIn(
+            "required_tool_only must be a subset of allowed_tool_only",
+            messages,
+        )
+        self.assertIn(
+            "Required tool-only MCP missing from Codex / ChatGPT: allowed-native",
+            messages,
+        )
+        self.assertIn("invalid allowed_tool_only for cursor", messages)
+
     def test_strict_runtime_exits_nonzero_when_findings_exist(self):
         (self.home / ".claude.json").write_text(
             json.dumps(

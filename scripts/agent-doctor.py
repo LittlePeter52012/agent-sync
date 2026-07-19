@@ -273,6 +273,122 @@ def plugin_scope_findings() -> list[dict[str, str]]:
     return findings
 
 
+def mcp_scope_findings() -> list[dict[str, str]]:
+    path = HUB / "policies" / "tool-scopes.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    policies = data.get("mcp", {}) if isinstance(data, dict) else {}
+    if not isinstance(policies, dict):
+        return [
+            {
+                "severity": "attention",
+                "message": "Tool scope policy has an invalid mcp section.",
+            }
+        ]
+
+    labels = {
+        "antigravity": "Gemini / Antigravity",
+        "cursor": "Cursor",
+        "claude": "Claude",
+        "opencode": "OpenCode",
+        "codex": "Codex / ChatGPT",
+        "vscode": "Copilot / VS Code",
+    }
+    inventory = {
+        record["tool"]: record
+        for record in collect_inventory(HOME, HUB)
+        if not record["is_profile"]
+    }
+    shared = {name.casefold() for name in read_shared_mcp()}
+    findings: list[dict[str, str]] = []
+
+    for tool, policy in policies.items():
+        if tool not in labels:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Tool scope policy has an unsupported MCP tool: {tool}",
+                }
+            )
+            continue
+        if not isinstance(policy, dict):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Tool scope policy has an invalid MCP entry for {tool}.",
+                }
+            )
+            continue
+
+        normalized: dict[str, dict[str, str]] = {}
+        valid = True
+        for key in ("allowed_tool_only", "required_tool_only"):
+            values = policy.get(key, [])
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and value.strip() for value in values
+            ):
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": f"Tool scope policy has invalid {key} for {tool}.",
+                    }
+                )
+                valid = False
+                continue
+            normalized[key] = {
+                value.casefold(): value for value in values
+            }
+        if not valid:
+            continue
+
+        allowed = normalized["allowed_tool_only"]
+        required = normalized["required_tool_only"]
+        outside_allowlist = sorted(set(required) - set(allowed))
+        if outside_allowlist:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        f"Invalid tool-only MCP policy for {tool}: "
+                        "required_tool_only must be a subset of allowed_tool_only."
+                    ),
+                }
+            )
+
+        record = inventory.get(tool, {"mcp_names": []})
+        actual = {
+            name.casefold(): name
+            for name in record["mcp_names"]
+            if name.casefold() not in shared
+        }
+        if "allowed_tool_only" in policy:
+            for name in sorted(set(actual) - set(allowed)):
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            f"Unexpected tool-only MCP in {labels[tool]}: "
+                            f"{actual[name]}"
+                        ),
+                    }
+                )
+        for name in sorted(set(required) - set(actual)):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        f"Required tool-only MCP missing from {labels[tool]}: "
+                        f"{required[name]}"
+                    ),
+                }
+            )
+    return findings
+
+
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -477,6 +593,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
         + mcp_usability_findings()
         + configured_mcp_findings()
         + plugin_scope_findings()
+        + mcp_scope_findings()
     )
     runtime_checked: list[str] = []
     if runtime:
