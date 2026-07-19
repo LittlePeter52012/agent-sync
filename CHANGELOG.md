@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.0 — 2026-07-19
+
+- Add optional per-Agent allowlists and required lists for intentional
+  tool-only MCP servers in `policies/tool-scopes.json`.
+- Extend Doctor with secret-free findings for unexpected, missing-required, and
+  invalidly scoped tool-only MCP definitions.
+- Document the ownership boundary between shared Skills, shared MCP servers,
+  tool-only MCP servers, and native plugins/extensions.
+- Keep the new audit read-only: `agent-sync fix` never removes native
+  tool-owned MCP configuration.
+
 ## 1.4.0 — 2026-07-19
 
 - Add `agent-sync sources` to rank MCP promotion candidates by static health,

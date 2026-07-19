@@ -157,7 +157,7 @@ agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
 
 `doctor` is local and read-only. It reports installed agent surfaces, configured
 model/provider names, skill and shared-MCP coverage, tool-only MCP executable
-health, retired MCP residue, plugin-scope drift, and duplicate synced rules.
+health, retired MCP residue, plugin/MCP scope drift, and duplicate synced rules.
 `doctor --runtime` adds bounded OpenCode and Claude CLI probes. Raw command
 output is discarded after status parsing. Reports never print MCP values,
 tokens, private configuration paths, cookies, or account/subscription
@@ -194,8 +194,9 @@ source explicitly.
 
 ### Optional tool-scope policy
 
-The private Hub can audit plugin ownership without installing or uninstalling
-anything. Put a policy at `policies/tool-scopes.json`:
+The private Hub can audit native plugin ownership and intentional tool-only MCP
+servers without installing, uninstalling, or removing anything. Put a policy at
+`policies/tool-scopes.json`:
 
 ```json
 {
@@ -206,12 +207,39 @@ anything. Put a policy at `policies/tool-scopes.json`:
     "codex": {
       "forbidden": ["example-plugin@example-marketplace"]
     }
+  },
+  "mcp": {
+    "codex": {
+      "allowed_tool_only": ["native-loopback"],
+      "required_tool_only": ["native-loopback"]
+    },
+    "cursor": {
+      "allowed_tool_only": ["editor-native-server"]
+    }
   }
 }
 ```
 
-`doctor` reports drift; each product's native plugin manager remains
-authoritative for changes.
+`allowed_tool_only` rejects accidental MCP drift while preserving the names
+listed for that Agent. `required_tool_only` also reports when a native
+integration disappears. Matching is case-insensitive. Supported keys are
+`antigravity`, `cursor`, `claude`, `opencode`, `codex`, and `vscode`.
+
+The ownership rule is:
+
+| Capability | Source of truth | Agent Sync behavior |
+|---|---|---|
+| Shared Skill | Hub manifest and `skills/` | Symlink to every supported Agent |
+| Shared MCP | Hub `mcp/shared-servers.json` | Merge into every supported Agent |
+| Tool-only MCP | Its native Agent config | Preserve and audit only |
+| Native plugin/extension | Product plugin manager | Never synchronize |
+
+`doctor` only reports scope drift. Each product's native plugin manager remains
+authoritative, and `agent-sync fix` never removes tool-only MCP servers.
+
+A locally launched CLI or MCP can still call a cloud service. Record execution
+location and data destination separately in the private Hub runbook instead of
+assuming that every local process is offline.
 
 ### Auto-update (optional)
 
@@ -245,7 +273,7 @@ Environment:
   skills/<name>/SKILL.md
   mcp/shared-servers.json    # shared MCP (use ${ENV} placeholders)
   mcp/retired-servers.json   # shared MCP names intentionally removed
-  policies/tool-scopes.json  # optional required/forbidden plugin audit
+  policies/tool-scopes.json  # optional plugin and tool-only MCP scope audit
   rules/*.md                 # injected into CLAUDE.md / AGENTS.md / GEMINI.md / Copilot
 ```
 
