@@ -424,6 +424,167 @@ class AgentDoctorTests(unittest.TestCase):
         )
         self.assertIn("invalid allowed_tool_only for cursor", messages)
 
+    def test_doctor_reports_missing_cli_for_shared_skill(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "example": {
+                            "required_commands": [
+                                "/private/TOKEN_SHOULD_NOT_APPEAR/"
+                                "definitely-missing-example-cli"
+                            ]
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor()
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Required CLI missing for Skill example: definitely-missing-example-cli",
+            messages,
+        )
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_accepts_available_cli_for_shared_skill(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "example": {"required_commands": ["example-cli"]}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        binary_dir = Path(self.tempdir.name) / "bin"
+        binary_dir.mkdir()
+        binary = binary_dir / "example-cli"
+        binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+
+        result = self.run_doctor(
+            extra_env={"PATH": f"{binary_dir}:{os.environ.get('PATH', '')}"}
+        )
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertNotIn("Required CLI missing for Skill example", messages)
+
+    def test_doctor_reports_unlisted_skill_dependency_policy(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "not-in-manifest": {"required_commands": ["example-cli"]}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        messages = "\n".join(
+            item["message"]
+            for item in json.loads(self.run_doctor().stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Skill dependency policy names unlisted Hub Skill: not-in-manifest",
+            messages,
+        )
+
+    def test_doctor_redacts_path_from_unlisted_skill_dependency_policy(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "/private/TOKEN_SHOULD_NOT_APPEAR/not-in-manifest": {
+                            "required_commands": ["example-cli"]
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor()
+
+        self.assertIn(
+            "Skill dependency policy names unlisted Hub Skill: not-in-manifest",
+            result.stdout,
+        )
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_reports_invalid_skill_dependency_policy(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "example": {"required_commands": "not-a-list"}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        messages = "\n".join(
+            item["message"]
+            for item in json.loads(self.run_doctor().stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Skill dependency policy has invalid required_commands for example",
+            messages,
+        )
+
+    def test_init_example_skill_dependency_policy_matches_manifest(self):
+        initialized_hub = Path(self.tempdir.name) / "initialized-hub"
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(initialized_hub),
+        }
+        subprocess.run(
+            [str(ENTRYPOINT), "init"],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        result = subprocess.run(
+            ["python3", str(DOCTOR), "--json"],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+        self.assertNotIn(
+            "Skill dependency policy names unlisted Hub Skill",
+            messages,
+        )
+
     def test_strict_runtime_exits_nonzero_when_findings_exist(self):
         (self.home / ".claude.json").write_text(
             json.dumps(

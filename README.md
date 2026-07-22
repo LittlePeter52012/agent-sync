@@ -157,7 +157,8 @@ agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
 
 `doctor` is local and read-only. It reports installed agent surfaces, configured
 model/provider names, skill and shared-MCP coverage, tool-only MCP executable
-health, retired MCP residue, plugin/MCP scope drift, and duplicate synced rules.
+health, optional CLI-backed Skill dependencies, retired MCP residue, plugin/MCP
+scope drift, and duplicate synced rules.
 `doctor --runtime` adds bounded OpenCode and Claude CLI probes. Raw command
 output is discarded after status parsing. Reports never print MCP values,
 tokens, private configuration paths, cookies, or account/subscription
@@ -203,6 +204,11 @@ servers without installing, uninstalling, or removing anything. Put a policy at
 
 ```json
 {
+  "skills": {
+    "example-cli-skill": {
+      "required_commands": ["example-cli"]
+    }
+  },
   "plugins": {
     "opencode": {
       "required": ["example-opencode-plugin"]
@@ -223,6 +229,13 @@ servers without installing, uninstalling, or removing anything. Put a policy at
 }
 ```
 
+`skills.<name>.required_commands` makes Doctor verify that a shared
+CLI-backed Skill is usable, not merely linked. Skill names must also appear in
+`manifest.yaml`. Bare commands are resolved through `PATH`; executable paths
+are checked directly. The check is read-only: Agent Sync never installs or
+updates the CLI. Prefer this pattern over adding a duplicate shared MCP when
+the Agents can already invoke the local command through a Skill.
+
 `allowed_tool_only` rejects accidental MCP drift while preserving the names
 listed for that Agent. `required_tool_only` also reports when a native
 integration disappears. Matching is case-insensitive. Supported keys are
@@ -233,6 +246,7 @@ The ownership rule is:
 | Capability | Source of truth | Agent Sync behavior |
 |---|---|---|
 | Shared Skill | Hub manifest and `skills/` | Symlink to every supported Agent |
+| CLI used by a shared Skill | Local package manager or pinned binary; optional Hub health policy | Audit availability only |
 | Shared MCP | Hub `mcp/shared-servers.json` | Merge into every supported Agent |
 | Tool-only MCP | Its native Agent config | Preserve and audit only |
 | Native plugin/extension | Product plugin manager | Never synchronize |

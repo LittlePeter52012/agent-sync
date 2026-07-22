@@ -1,4 +1,11 @@
 {
+  "skills": {
+    "hello-sync": {
+      "required_commands": [
+        "sh"
+      ]
+    }
+  },
   "plugins": {
     "opencode": {
       "required": []

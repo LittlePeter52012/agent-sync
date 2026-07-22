@@ -273,6 +273,75 @@ def plugin_scope_findings() -> list[dict[str, str]]:
     return findings
 
 
+def skill_dependency_findings() -> list[dict[str, str]]:
+    path = HUB / "policies" / "tool-scopes.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    policies = data.get("skills", {}) if isinstance(data, dict) else {}
+    if not isinstance(policies, dict):
+        return [
+            {
+                "severity": "attention",
+                "message": "Tool scope policy has an invalid skills section.",
+            }
+        ]
+
+    manifest_skills = set(read_manifest_skills())
+    findings: list[dict[str, str]] = []
+    for skill, policy in policies.items():
+        if skill not in manifest_skills:
+            display_name = skill.replace(chr(92), "/").rsplit("/", 1)[-1]
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        "Skill dependency policy names unlisted Hub Skill: "
+                        f"{display_name}"
+                    ),
+                }
+            )
+            continue
+        commands = (
+            policy.get("required_commands", [])
+            if isinstance(policy, dict)
+            else None
+        )
+        if not isinstance(commands, list) or not all(
+            isinstance(command, str) and command.strip() for command in commands
+        ):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        "Skill dependency policy has invalid required_commands "
+                        f"for {skill}"
+                    ),
+                }
+            )
+            continue
+        for command in commands:
+            candidate = Path(command).expanduser()
+            if candidate.is_absolute() or "/" in command:
+                available = candidate.is_file() and os.access(candidate, os.X_OK)
+            else:
+                available = bool(shutil.which(command))
+            if not available:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            f"Required CLI missing for Skill {skill}: "
+                            f"{command.replace(chr(92), '/').rsplit('/', 1)[-1]}"
+                        ),
+                    }
+                )
+    return findings
+
+
 def mcp_scope_findings() -> list[dict[str, str]]:
     path = HUB / "policies" / "tool-scopes.json"
     if not path.exists():
@@ -603,6 +672,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
         + mcp_usability_findings()
         + configured_mcp_findings()
         + plugin_scope_findings()
+        + skill_dependency_findings()
         + mcp_scope_findings()
     )
     runtime_checked: list[str] = []

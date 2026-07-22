@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0 — 2026-07-22
+
+- Add optional `skills.<name>.required_commands` checks in
+  `policies/tool-scopes.json` so Doctor can distinguish a synchronized Skill
+  from a usable CLI-backed Skill.
+- Report missing executables, malformed command lists, and policies that name
+  Skills outside the Hub manifest without executing third-party commands.
+- Document CLI-backed Skills as a local dependency boundary rather than a
+  reason to duplicate the same capability as shared MCP.
+
 ## 1.5.2 — 2026-07-19
 
 - Resolve Claude MCP environment placeholders from the concrete value already
