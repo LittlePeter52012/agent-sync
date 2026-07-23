@@ -366,6 +366,19 @@ class SyncMulticaTests(unittest.TestCase):
         self.assertIn("inside", result.stderr.lower())
         self.assertEqual(self.calls(), [])
 
+    def test_skill_md_symlink_cannot_escape_private_hub(self):
+        outside = Path(self.tempdir.name) / "outside-skill.md"
+        outside.write_text("outside\n", encoding="utf-8")
+        skill_md = self.hub / "skills" / "shared" / "SKILL.md"
+        skill_md.unlink()
+        skill_md.symlink_to(outside)
+
+        result = self.run_script("--apply")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside", result.stderr.lower())
+        self.assertEqual(self.calls(), [])
+
     def test_old_multica_version_fails_before_remote_reads_or_writes(self):
         self.write_state(version="0.4.8")
 

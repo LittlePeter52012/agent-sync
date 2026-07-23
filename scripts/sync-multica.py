@@ -114,6 +114,10 @@ def read_local_skill(
     if not skill_md.is_file():
         raise SyncError(f"Skill '{name}' source is missing SKILL.md")
     try:
+        skill_md.resolve().relative_to(source)
+    except ValueError as exc:
+        raise SyncError(f"Skill '{name}' SKILL.md points outside its source") from exc
+    try:
         content = skill_md.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise SyncError(f"Skill '{name}' SKILL.md must be readable UTF-8") from exc
