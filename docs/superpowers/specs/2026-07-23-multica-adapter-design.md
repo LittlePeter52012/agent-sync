@@ -108,4 +108,3 @@ Squad 可以提供一个 `previous_name` 支持受控改名；当前名和旧名
 - runtime、MCP、Issue、评论和 Git 命令不会被构造；
 - `agent-sync all` 不会触发 Multica；
 - 公开仓库不含私人名称、路径、端点或凭据。
-
