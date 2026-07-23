@@ -14,6 +14,7 @@ Supported tools:
 - Codex
 - OpenCode
 - VS Code GitHub Copilot
+- Multica (optional explicit control-plane adapter)
 
 ## Install
 
@@ -137,6 +138,8 @@ agent-sync all           # backward-compatible alias for full Hub sync
 agent-sync skills        # symlink whitelist skills
 agent-sync mcp           # merge shared MCP (keeps tool-only servers)
 agent-sync rules         # inject rules/*.md
+agent-sync multica       # read-only check of allowlisted Multica state
+agent-sync multica --apply # explicitly apply allowlisted Multica changes
 agent-sync list          # coverage matrix
 agent-sync verify        # structural verification
 agent-sync verify --strict # structural verification + runtime doctor
@@ -172,6 +175,30 @@ Hub-managed MCP names, and normalizes managed rule blocks. Tool-only MCP servers
 remain untouched. For shared MCP names, Hub command, URL, transport, and normal
 arguments are authoritative; existing local secrets and machine-specific
 absolute paths are preserved.
+
+### Optional Multica control-plane adapter
+
+Multica is treated as a task control plane, not as another copy of every local
+Agent configuration. Put an explicit allowlist at
+`$AGENT_HUB_ROOT/multica/desired-state.json`, using
+`examples/multica/desired-state.json` as the schema example.
+
+```bash
+agent-sync multica          # read-only; 0 = converged, 2 = drift, 1 = error
+agent-sync multica --apply  # the only command that writes to Multica
+```
+
+The adapter can manage allowlisted workspace Skill content and supporting
+files, complete Skill assignments for named Agents, and the name, leader,
+description, and instructions of named Squads. Exact names must resolve
+uniquely. Managed Skill sources and Squad instruction files must stay inside
+the private Hub.
+
+It never manages runtimes, models, credentials, MCP servers, product plugins,
+Issues, comments, task history, or Git repositories. `agent-sync sync`, `all`,
+`fix`, and `update --sync` never invoke the Multica adapter. A local Multica CLI
+can still communicate with a remote or self-hosted Multica workspace; local
+execution and remote data destination are separate security properties.
 
 For VS Code, `agent-sync mcp` merges shared MCP servers into the default user
 configuration and every existing VS Code Profile. Profile-specific MCP files
@@ -291,6 +318,8 @@ Environment:
   mcp/shared-servers.json    # shared MCP (use ${ENV} placeholders)
   mcp/retired-servers.json   # shared MCP names intentionally removed
   policies/tool-scopes.json  # optional plugin and tool-only MCP scope audit
+  multica/desired-state.json # optional explicit Multica allowlist
+  multica/squads/*.md         # optional Squad instructions
   rules/*.md                 # injected into CLAUDE.md / AGENTS.md / GEMINI.md / Copilot
 ```
 

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "minimum_multica_version": "0.4.9",
+  "skills": [
+    {
+      "name": "Example Shared Skill",
+      "source": "skills/hello-sync",
+      "description": "Example Skill published from the private Agent Hub."
+    },
+    {
+      "name": "Existing Workspace Skill",
+      "managed": false
+    }
+  ],
+  "agent_skill_assignments": [
+    {
+      "agent": "Example Planner",
+      "skills": [
+        "Example Shared Skill",
+        "Existing Workspace Skill"
+      ]
+    }
+  ],
+  "squads": [
+    {
+      "name": "Example Research Squad",
+      "previous_name": "Old Example Research Squad",
+      "leader": "Example Planner",
+      "description": "Route research work to the minimum necessary specialists.",
+      "instructions_file": "multica/squads/example-research.md"
+    }
+  ]
+}

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.0 — 2026-07-23
+
+- Add an optional `agent-sync multica` adapter that checks a private Hub
+  allowlist without writing by default and returns exit code 2 for drift.
+- Require explicit `agent-sync multica --apply` before publishing allowlisted
+  workspace Skills, replacing named Agent Skill assignments, or updating named
+  Squad policy fields.
+- Keep Multica runtimes, credentials, MCP servers, plugins, Issues, comments,
+  task history, and Git repositories outside the adapter boundary.
+- Keep `sync`, `all`, `fix`, and `update --sync` local-only with respect to
+  Multica.
+
 ## 1.6.0 — 2026-07-22
 
 - Add optional `skills.<name>.required_commands` checks in
