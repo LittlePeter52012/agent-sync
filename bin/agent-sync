@@ -5,7 +5,7 @@
 # (default: ~/.config/agent-hub), not in this repository.
 #
 # Usage:
-#   agent-sync sync|sources|trace|skills|mcp|rules|all|list|verify|test|status|doctor|fix|bench|update|push|help
+#   agent-sync sync|sources|trace|skills|mcp|rules|multica|all|list|verify|test|status|doctor|fix|bench|update|push|help
 #
 # Environment:
 #   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
@@ -46,6 +46,7 @@ Commands:
   skills [--force]   Symlink whitelist skills from hub to all tools
   mcp                Merge shared MCP into tool configs (keeps tool-only servers)
   rules              Inject rule blocks into CLAUDE/AGENTS/GEMINI/Copilot
+  multica [--apply]  Check private Hub → Multica drift; mutate only with --apply
   all [--force]      skills + mcp + rules + verify
   list               Show whitelist and coverage matrix
   verify [--strict]  Structural checks; strict also runs runtime doctor
@@ -171,6 +172,14 @@ case "$cmd" in
     rules)
         require_hub
         bash "$SCRIPTS/sync-rules.sh"
+        ;;
+    multica)
+        require_hub
+        if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ "$1" != "--apply" ]; }; then
+            echo "Unknown multica option: ${1:-}" >&2
+            usage 1
+        fi
+        exec python3 "$SCRIPTS/sync-multica.py" "$@"
         ;;
     all)
         require_hub
