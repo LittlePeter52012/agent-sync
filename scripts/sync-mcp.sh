@@ -13,13 +13,42 @@ MERGE_CLAUDE="$SYNC_HOME/scripts/sync-mcp-claude.py"
 PRUNE_PY="$SYNC_HOME/scripts/prune-retired-mcp.py"
 RETIRED="$HUB_ROOT/mcp/retired-servers.json"
 
+prepare_antigravity_cache() {
+    local config="$1"
+    local root="${config%/mcp_config.json}"
+    local server
+    while IFS= read -r server; do
+        [ -n "$server" ] || continue
+        case "$server" in
+            */*|*..*)
+                echo "Unsafe MCP server name: $server" >&2
+                return 1
+                ;;
+        esac
+        mkdir -p "$root/mcp/$server"
+    done < <(python3 - "$config" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+servers = json.loads(Path(sys.argv[1]).read_text()).get("mcpServers", {})
+for name, config in sorted(servers.items()):
+    if isinstance(config, dict) and config.get("disabled") is not True:
+        print(name)
+PY
+)
+}
+
 if [ ! -f "$CANONICAL" ]; then
     echo "Missing $CANONICAL" >&2
     exit 1
 fi
 
 TARGETS=(
-    "Antigravity|$HOME/.gemini/config/mcp_config.json"
+    "Gemini global|$HOME/.gemini/config/mcp_config.json"
+    "Antigravity App|$HOME/.gemini/antigravity/mcp_config.json"
+    "Antigravity CLI|$HOME/.gemini/antigravity-cli/mcp_config.json"
+    "Antigravity IDE|$HOME/.gemini/antigravity-ide/mcp_config.json"
     "Cursor|$HOME/.cursor/mcp.json"
     "VSCode|$HOME/Library/Application Support/Code/User/mcp.json"
     "OpenCode|$HOME/.config/opencode/opencode.json"
@@ -35,6 +64,11 @@ for entry in "${TARGETS[@]}"; do
     echo "[mcp] → $label ($target)"
     python3 "$PRUNE_PY" "$RETIRED" "$target"
     python3 "$MERGE_PY" "$CANONICAL" "$target"
+    case "$label" in
+        "Antigravity App"|"Antigravity CLI"|"Antigravity IDE")
+            prepare_antigravity_cache "$target"
+            ;;
+    esac
 done
 
 VSCODE_PROFILES="$HOME/Library/Application Support/Code/User/profiles"

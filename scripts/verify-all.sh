@@ -76,7 +76,10 @@ def codex_names(path):
     }
 
 targets = [
-    ("Antigravity", home / ".gemini/config/mcp_config.json", "json", "mcpServers"),
+    ("Gemini global", home / ".gemini/config/mcp_config.json", "json", "mcpServers"),
+    ("Antigravity App", home / ".gemini/antigravity/mcp_config.json", "json", "mcpServers"),
+    ("Antigravity CLI", home / ".gemini/antigravity-cli/mcp_config.json", "json", "mcpServers"),
+    ("Antigravity IDE", home / ".gemini/antigravity-ide/mcp_config.json", "json", "mcpServers"),
     ("Cursor", home / ".cursor/mcp.json", "json", "mcpServers"),
     ("Claude", home / ".claude.json", "json", "mcpServers"),
     ("VS Code", home / "Library/Application Support/Code/User/mcp.json", "json", "servers"),

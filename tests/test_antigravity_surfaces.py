@@ -125,6 +125,10 @@ class AntigravitySurfaceTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+        (self.home / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"shared": {"command": "/bin/sh"}}}),
+            encoding="utf-8",
+        )
 
         listed = subprocess.run(
             ["bash", str(LIST_SYNC)],

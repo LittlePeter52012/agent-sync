@@ -18,6 +18,8 @@ skill_targets() {
     cat <<EOF
 $HOME/.gemini/config/skills
 $HOME/.gemini/antigravity/skills
+$HOME/.gemini/antigravity-cli/skills
+$HOME/.gemini/antigravity-ide/skills
 $HOME/.claude/skills
 $HOME/.cursor/skills
 $HOME/.codex/skills

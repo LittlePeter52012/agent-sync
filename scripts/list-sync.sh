@@ -51,7 +51,10 @@ if mcp_path.exists():
     shared = list(json.loads(mcp_path.read_text()).get("mcpServers", {}).keys())
 
 skill_targets = {
-    "Antigravity": Path.home()/".gemini/config/skills",
+    "Gemini global": Path.home()/".gemini/config/skills",
+    "Antigravity App": Path.home()/".gemini/antigravity/skills",
+    "Antigravity CLI": Path.home()/".gemini/antigravity-cli/skills",
+    "Antigravity IDE": Path.home()/".gemini/antigravity-ide/skills",
     "Cursor": Path.home()/".cursor/skills",
     "Claude": Path.home()/".claude/skills",
     "Codex": Path.home()/".codex/skills",
@@ -77,15 +80,18 @@ def mcp_names_toml(path: Path) -> set[str]:
         return set()
     return {m.group(1).lower() for m in re.finditer(r"^\[mcp_servers\.([^\].]+)\]", path.read_text(), re.M)}
 
-print(f"{'工具':<16} {'Skills':<10} {'共享MCP':<10}")
-print("-" * 40)
+print(f"{'工具':<20} {'Skills':<10} {'共享MCP':<10}")
+print("-" * 44)
 for name, base in skill_targets.items():
-    print(f"{name:<16} {skill_ok(base):<10} {'—':<10}")
+    print(f"{name:<20} {skill_ok(base):<10} {'—':<10}")
 
 if shared:
     shared_l = [s.lower() for s in shared]
     mcp_targets = {
-        "Antigravity": (Path.home()/".gemini/config/mcp_config.json", "json", "mcpServers"),
+        "Gemini global": (Path.home()/".gemini/config/mcp_config.json", "json", "mcpServers"),
+        "Antigravity App": (Path.home()/".gemini/antigravity/mcp_config.json", "json", "mcpServers"),
+        "Antigravity CLI": (Path.home()/".gemini/antigravity-cli/mcp_config.json", "json", "mcpServers"),
+        "Antigravity IDE": (Path.home()/".gemini/antigravity-ide/mcp_config.json", "json", "mcpServers"),
         "Cursor": (Path.home()/".cursor/mcp.json", "json", "mcpServers"),
         "Claude": (Path.home()/".claude.json", "json", "mcpServers"),
         "VSCode/Copilot": (Path.home()/"Library/Application Support/Code/User/mcp.json", "json", "servers"),
@@ -95,7 +101,7 @@ if shared:
     for name, (path, kind, key) in mcp_targets.items():
         names = mcp_names_json(path, key) if kind == "json" else mcp_names_toml(path)
         have = sum(1 for s in shared_l if s in names)
-        print(f"{name:<16} {'—':<10} {have}/{len(shared)}")
+        print(f"{name:<20} {'—':<10} {have}/{len(shared)}")
 PY
 
 echo ""
