@@ -9,7 +9,10 @@ Your personal configuration belongs in a **separate private hub** (default `~/.c
 Supported tools:
 
 - Cursor
-- Antigravity (Gemini)
+- Gemini global configuration
+- Antigravity App
+- Antigravity CLI (`agy`)
+- Antigravity IDE
 - Claude Code
 - Codex
 - OpenCode
@@ -60,7 +63,7 @@ flowchart TB
     PROMOTE["2 · agent-sync sync --from TOOL<br/>Explicit preview → Confirm once"]
     HUB[("3 · Private Agent Hub<br/>Skills · MCP · Rules<br/>Single source of truth")]
     SYNC["4 · agent-sync sync<br/>Distribute and convert for every tool"]
-    TARGETS["Claude · Codex / ChatGPT · Cursor<br/>Gemini / Antigravity · OpenCode · VS Code / Copilot"]
+    TARGETS["Claude · Codex / ChatGPT · Cursor<br/>Gemini global · Antigravity App / CLI / IDE<br/>OpenCode · VS Code / Copilot"]
     CHECK{"5 · agent-sync doctor<br/>Is everything healthy?"}
     READY["Ready to use<br/>The same shared capabilities everywhere"]
     FIX["agent-sync fix<br/>Repair → Re-sync → Verify"]
@@ -97,6 +100,30 @@ agent-sync fix                          # repair deterministic issues and verify
 Use `--dry-run` to preview a source promotion without writing, or `--yes` for
 intentional non-interactive use. `agent-sync all` remains an alias for the
 original full Hub-to-tools workflow.
+
+### Gemini and Antigravity surfaces
+
+Agent Sync treats the installed Gemini/Antigravity surfaces as separate
+configuration consumers:
+
+| Surface | Skills | MCP |
+|---------|--------|-----|
+| Gemini global | `~/.gemini/config/skills` | `~/.gemini/config/mcp_config.json` |
+| Antigravity App | `~/.gemini/antigravity/skills` | `~/.gemini/antigravity/mcp_config.json` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/skills` | `~/.gemini/antigravity-cli/mcp_config.json` |
+| Antigravity IDE | `~/.gemini/antigravity-ide/skills` | `~/.gemini/antigravity-ide/mcp_config.json` |
+
+The standalone CLI executable is `agy`. A local executable named
+`antigravity` may only launch the desktop app and is not used as proof that the
+CLI is installed. `agent-sync list`, `verify`, and `doctor` report all four
+surfaces separately. The compatibility source name `--from antigravity`
+continues to promote from the Gemini global MCP file.
+
+Skills remain Hub-owned links. MCP synchronization merges shared servers into
+each surface while preserving local product-only servers and local credential
+values. For App, CLI, and IDE, Agent Sync also creates missing per-server cache
+directories. Shared rules still use the single global
+`~/.gemini/GEMINI.md`; root-specific rule copies are intentionally not created.
 
 ## Two-layer model
 

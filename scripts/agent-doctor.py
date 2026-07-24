@@ -616,7 +616,13 @@ def capability_labels(name: str, config: Path) -> list[str]:
         labels.extend(("browser", "computer-use"))
     elif name == "Cursor" and (HOME / ".cursor" / "extensions").exists():
         labels.append("extensions")
-    elif name == "Gemini / Antigravity" and (HOME / ".gemini" / "extensions").exists():
+    elif name == "Gemini global" and (HOME / ".gemini" / "extensions").exists():
+        labels.append("extensions")
+    elif name in {"Antigravity App", "Antigravity CLI"}:
+        root_name = "antigravity" if name == "Antigravity App" else "antigravity-cli"
+        if (HOME / ".gemini" / root_name / "plugins").exists():
+            labels.append("plugins")
+    elif name == "Antigravity IDE" and (HOME / ".antigravity-ide" / "extensions").exists():
         labels.append("extensions")
     elif name == "Claude" and (HOME / ".claude" / "plugins").exists():
         labels.append("plugins")
@@ -628,7 +634,10 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
         ("Codex / ChatGPT", "codex", HOME / ".codex" / "config.toml", HOME / ".codex" / "skills", "toml", codex_mcp_keys, ("ChatGPT.app",)),
         ("Claude", "claude", HOME / ".claude.json", HOME / ".claude" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Claude.app",)),
         ("Cursor", "cursor", HOME / ".cursor" / "mcp.json", HOME / ".cursor" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Cursor.app",)),
-        ("Gemini / Antigravity", "gemini", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Gemini.app", "Antigravity.app", "Antigravity IDE.app")),
+        ("Gemini global", "gemini", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Gemini.app",)),
+        ("Antigravity App", "", HOME / ".gemini" / "antigravity" / "mcp_config.json", HOME / ".gemini" / "antigravity" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Antigravity.app",)),
+        ("Antigravity CLI", "agy", HOME / ".gemini" / "antigravity-cli" / "mcp_config.json", HOME / ".gemini" / "antigravity-cli" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ()),
+        ("Antigravity IDE", "", HOME / ".gemini" / "antigravity-ide" / "mcp_config.json", HOME / ".gemini" / "antigravity-ide" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Antigravity IDE.app",)),
         ("OpenCode", "opencode", HOME / ".config" / "opencode" / "opencode.json", HOME / ".config" / "opencode" / "skills", "json", lambda p: json_object_keys(p, "mcp"), ()),
         ("Copilot / VS Code", "copilot", HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json", HOME / ".copilot" / "skills", "json", lambda p: json_object_keys(p, "servers"), ("Visual Studio Code.app",)),
         ("Agents", "", HOME / ".agents", HOME / ".agents" / "skills", "none", lambda p: set(), ()),

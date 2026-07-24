@@ -70,6 +70,65 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertFalse(cursor["config_present"])
         self.assertTrue(any("Cursor" in finding["message"] for finding in report["findings"]))
 
+    def test_doctor_reports_antigravity_surfaces_independently(self):
+        roots = {
+            "Gemini global": self.home / ".gemini" / "config",
+            "Antigravity App": self.home / ".gemini" / "antigravity",
+            "Antigravity CLI": self.home / ".gemini" / "antigravity-cli",
+            "Antigravity IDE": self.home / ".gemini" / "antigravity-ide",
+        }
+        for root in roots.values():
+            (root / "skills" / "example").mkdir(parents=True)
+            (root / "skills" / "example" / "SKILL.md").write_text("skill")
+            (root / "mcp_config.json").write_text(
+                json.dumps(
+                    {"mcpServers": {"shared": {"command": "shared-mcp"}}}
+                )
+            )
+
+        fake_bin = Path(self.tempdir.name) / "bin"
+        fake_bin.mkdir()
+        agy = fake_bin / "agy"
+        agy.write_text("#!/bin/sh\nexit 0\n")
+        agy.chmod(0o755)
+        report = json.loads(
+            self.run_doctor(
+                extra_env={
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                }
+            ).stdout
+        )
+        records = {agent["name"]: agent for agent in report["agents"]}
+
+        for name in roots:
+            self.assertIn(name, records)
+            self.assertEqual(records[name]["skills"], {"configured": 1, "expected": 1})
+            self.assertEqual(records[name]["mcp"], {"configured": 1, "expected": 1})
+        self.assertTrue(records["Antigravity CLI"]["cli_present"])
+        self.assertNotIn("Gemini / Antigravity", records)
+
+        (roots["Antigravity CLI"] / "skills" / "example" / "SKILL.md").unlink()
+        after = json.loads(
+            self.run_doctor(
+                extra_env={
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                }
+            ).stdout
+        )
+        coverage = [
+            finding["message"]
+            for finding in after["findings"]
+            if "skill coverage is incomplete" in finding["message"]
+            and (
+                "Antigravity" in finding["message"]
+                or "Gemini global" in finding["message"]
+            )
+        ]
+        self.assertEqual(
+            coverage,
+            ["Antigravity CLI skill coverage is incomplete."],
+        )
+
     def test_entrypoint_dispatches_doctor(self):
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
         result = subprocess.run(

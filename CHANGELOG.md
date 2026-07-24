@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.0 — 2026-07-24
+
+- Synchronize Hub Skills and shared MCP servers independently to Gemini global,
+  Antigravity App, the standalone `agy` CLI, and Antigravity IDE.
+- Preserve product-only MCP servers while preparing missing per-server cache
+  directories for the three Antigravity product roots.
+- Split `list`, `verify`, and `doctor` reporting so drift in one Antigravity
+  surface is visible without being masked by another.
+- Keep `--from antigravity` mapped to the Gemini global configuration and keep
+  shared rules in the single global `~/.gemini/GEMINI.md`.
+
 ## 1.7.0 — 2026-07-23
 
 - Add an optional `agent-sync multica` adapter that checks a private Hub
