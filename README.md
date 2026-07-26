@@ -180,6 +180,9 @@ agent-sync skills        # symlink whitelist skills
 agent-sync mcp           # merge shared MCP (keeps tool-only servers)
 agent-sync rules         # inject rules/*.md
 agent-sync hermes        # register ~/.agents/skills in Hermes external_dirs
+agent-sync deploy HOST   # read-only remote SSH preflight
+agent-sync deploy HOST --apply
+                         # push committed tool + Hub snapshots, then sync
 agent-sync multica       # read-only check of allowlisted Multica state
 agent-sync multica --apply # explicitly apply allowlisted Multica changes
 agent-sync list          # coverage matrix
@@ -412,7 +415,22 @@ Normal `sync` does not silently pull or push GitHub. To back up your private Hub
 agent-sync push -m "promote preferred MCP configuration"
 ```
 
-On another machine, run `agent-sync pull` followed by `agent-sync sync`.
+On another machine with working GitHub authentication, run `agent-sync pull`
+followed by `agent-sync sync`.
+
+If the remote machine should not store a private GitHub token, deploy from the
+canonical machine instead:
+
+```bash
+agent-sync deploy HOST          # read-only SSH preflight
+agent-sync deploy HOST --apply  # explicit push + remote sync
+```
+
+Remote deployment archives only committed `HEAD` content from the public tool
+and private Hub repositories. It refuses dirty source repositories, keeps the
+previous remote copies under
+`~/.local/state/agent-sync/remote-backups/`, and leaves product credentials and
+tool-native configuration outside those two directories untouched.
 
 ### Hermes shared Skills
 

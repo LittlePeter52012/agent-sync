@@ -5,7 +5,7 @@
 # (default: ~/.config/agent-hub), not in this repository.
 #
 # Usage:
-#   agent-sync sync|sources|trace|skills|mcp|rules|hermes|multica|all|list|verify|test|status|doctor|fix|bench|update|push|help
+#   agent-sync sync|sources|trace|skills|mcp|rules|hermes|multica|deploy|all|list|verify|test|status|doctor|fix|bench|update|push|help
 #
 # Environment:
 #   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
@@ -48,6 +48,8 @@ Commands:
   rules              Inject rule blocks into CLAUDE/AGENTS/GEMINI/Copilot
   hermes             Register ~/.agents/skills through Hermes external_dirs
   multica [--apply]  Check private Hub → Multica drift; mutate only with --apply
+  deploy HOST [--apply]
+                     Preflight or push committed tool + Hub snapshots over SSH
   all [--force]      skills + Hermes registration + mcp + rules + verify
   list               Show whitelist and coverage matrix
   verify [--strict]  Structural checks; strict also runs runtime doctor
@@ -186,6 +188,9 @@ case "$cmd" in
             usage 1
         fi
         exec python3 "$SCRIPTS/sync-multica.py" "$@"
+        ;;
+    deploy)
+        exec bash "$SCRIPTS/deploy-remote.sh" "$@"
         ;;
     all)
         require_hub

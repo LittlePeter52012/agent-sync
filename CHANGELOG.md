@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.1 — 2026-07-26
+
+- Add `agent-sync deploy HOST [--apply]` for credential-free, push-based
+  deployment of committed tool and private Hub snapshots over SSH.
+- Keep remote deployment read-only by default, refuse dirty local repositories,
+  preserve the previous remote snapshots, and roll back when structural sync
+  fails.
+
 ## 1.9.0 — 2026-07-26
 
 - Treat a shared Skill as healthy only when the target is a symlink that
