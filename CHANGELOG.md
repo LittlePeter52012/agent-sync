@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.3 — 2026-07-26
+
+- Recheck a failed OpenCode or Claude runtime MCP probe once before reporting
+  attention, filtering transient startup failures without hiding persistent
+  connection errors.
+
 ## 1.9.2 — 2026-07-26
 
 - Run the post-deployment Doctor through the remote login shell so NVM- and

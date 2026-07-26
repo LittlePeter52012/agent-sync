@@ -565,6 +565,44 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("OpenCode", messages)
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
 
+    def test_doctor_runtime_rechecks_a_transient_connection_failure(self):
+        fake_bin = Path(self.tempdir.name) / "bin"
+        fake_bin.mkdir()
+        opencode = fake_bin / "opencode"
+        attempts = Path(self.tempdir.name) / "opencode-attempts"
+        opencode.write_text(
+            "#!/bin/sh\n"
+            f"attempts={attempts}\n"
+            "count=0\n"
+            "[ -f \"$attempts\" ] && count=$(cat \"$attempts\")\n"
+            "count=$((count + 1))\n"
+            "printf '%s' \"$count\" >\"$attempts\"\n"
+            "if [ \"$count\" -eq 1 ]; then\n"
+            "  printf 'x mempalace failed\\n'\n"
+            "else\n"
+            "  printf 'mempalace connected\\n'\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        opencode.chmod(0o755)
+        claude = fake_bin / "claude"
+        claude.write_text(
+            "#!/bin/sh\nprintf 'healthy: command - connected\\n'\n",
+            encoding="utf-8",
+        )
+        claude.chmod(0o755)
+
+        result = self.run_doctor(
+            "--runtime",
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertNotIn("Runtime MCP connection failed", messages)
+        self.assertEqual(attempts.read_text(), "2")
+
     def test_doctor_runtime_supports_tool_specific_timeout(self):
         fake_bin = Path(self.tempdir.name) / "bin"
         fake_bin.mkdir()

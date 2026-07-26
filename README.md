@@ -209,10 +209,12 @@ coverage, tool-only MCP executable health, optional CLI-backed Skill
 dependencies, required lifecycle-hook wiring, retired MCP residue, plugin/MCP
 scope drift, and duplicate synced rules.
 `doctor --runtime` adds bounded OpenCode and Claude CLI probes. Raw command
-output is discarded after status parsing. Reports never print MCP values,
-tokens, private configuration paths, cookies, or account/subscription
-information. The default bounds are 30 seconds for OpenCode and 90 seconds for
-Claude. Override them with `AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE` and
+output is discarded after status parsing. A failed probe is rechecked once
+before it becomes a finding, while persistent failures remain visible. Reports
+never print MCP values, tokens, private configuration paths, cookies, or
+account/subscription information. The default bounds are 30 seconds for
+OpenCode and 90 seconds for Claude. Override them with
+`AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE` and
 `AGENT_SYNC_RUNTIME_TIMEOUT_CLAUDE`, or set
 `AGENT_SYNC_RUNTIME_TIMEOUT` for both.
 

@@ -722,6 +722,20 @@ def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
             continue
         output = result.stdout + "\n" + result.stderr
         failed = failed_runtime_names(label, output)
+        if failed or result.returncode:
+            try:
+                result = subprocess.run(
+                    [command, *arguments],
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            else:
+                output = result.stdout + "\n" + result.stderr
+                failed = failed_runtime_names(label, output)
         for name in failed:
             findings.append(
                 {
