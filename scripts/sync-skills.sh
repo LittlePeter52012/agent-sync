@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 SOURCE_DIR="$HUB_ROOT/skills"
 BACKUP_ROOT="$HUB_ROOT/.sync-backups"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 
 DRY_RUN=false
 FORCE=false
@@ -30,7 +31,10 @@ skill_present() { [ -L "$1" ] || [ -d "$1" ]; }
 
 backup_existing_dest() {
     local dest="$1" skill_name="$2" target_dir="$3"
-    local backup_dir="$BACKUP_ROOT/$(date +%Y%m%d_%H%M%S)/${target_dir##*/}"
+    local target_key backup_dir
+    target_key="${target_dir#"$HOME"/}"
+    target_key=$(printf '%s' "$target_key" | tr '/ ' '__')
+    backup_dir="$BACKUP_ROOT/$RUN_ID/$target_key"
     if [ "$DRY_RUN" = true ]; then
         log "  (dry-run) backup $dest → $backup_dir/$skill_name"
         return

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.9.0 — 2026-07-26
+
+- Treat a shared Skill as healthy only when the target is a symlink that
+  resolves to the matching private Hub Skill, eliminating false 100% coverage
+  from stale directories and cross-Agent links.
+- Register `~/.agents/skills` through Hermes' native
+  `skills.external_dirs`, preserving existing external directories and keeping
+  Hermes-local Skills separate.
+- Add read-only lifecycle-hook desired-state checks for Codex, Gemini, and
+  Cursor without rewriting native hook files or product-specific hooks.
+- Report configured and Hub-managed Skill coverage separately in Doctor.
+- Synchronize the actual Gemini CLI user configuration at
+  `~/.gemini/settings.json` and report it separately from Gemini global and
+  Antigravity product roots.
+- Inventory every Gemini/Antigravity MCP surface, remove retired MCP entries
+  from Gemini CLI, and prune case-only aliases of canonical shared servers.
+
 ## 1.8.0 — 2026-07-24
 
 - Synchronize Hub Skills and shared MCP servers independently to Gemini global,

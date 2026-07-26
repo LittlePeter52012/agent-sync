@@ -5,7 +5,7 @@
 # (default: ~/.config/agent-hub), not in this repository.
 #
 # Usage:
-#   agent-sync sync|sources|trace|skills|mcp|rules|multica|all|list|verify|test|status|doctor|fix|bench|update|push|help
+#   agent-sync sync|sources|trace|skills|mcp|rules|hermes|multica|all|list|verify|test|status|doctor|fix|bench|update|push|help
 #
 # Environment:
 #   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
@@ -46,8 +46,9 @@ Commands:
   skills [--force]   Symlink whitelist skills from hub to all tools
   mcp                Merge shared MCP into tool configs (keeps tool-only servers)
   rules              Inject rule blocks into CLAUDE/AGENTS/GEMINI/Copilot
+  hermes             Register ~/.agents/skills through Hermes external_dirs
   multica [--apply]  Check private Hub → Multica drift; mutate only with --apply
-  all [--force]      skills + mcp + rules + verify
+  all [--force]      skills + Hermes registration + mcp + rules + verify
   list               Show whitelist and coverage matrix
   verify [--strict]  Structural checks; strict also runs runtime doctor
   test               Full evaluation suite
@@ -110,6 +111,7 @@ require_hub() {
 
 run_full_sync() {
     bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
+    python3 "$SCRIPTS/sync_hermes.py"
     bash "$SCRIPTS/sync-mcp.sh"
     bash "$SCRIPTS/sync-rules.sh"
     bash "$SCRIPTS/verify-all.sh"
@@ -172,6 +174,10 @@ case "$cmd" in
     rules)
         require_hub
         bash "$SCRIPTS/sync-rules.sh"
+        ;;
+    hermes)
+        require_hub
+        exec python3 "$SCRIPTS/sync_hermes.py" "$@"
         ;;
     multica)
         require_hub
@@ -298,6 +304,7 @@ case "$cmd" in
         if $dry_run; then
             echo "━━━ agent-sync fix (dry run) ━━━"
             echo "  would sync skills from the hub whitelist"
+            echo "  would register shared Skills with Hermes when configured"
             echo "  would sync missing shared MCP entries without replacing local overrides"
             echo "  would deduplicate synced rules and inject one managed copy"
             echo "  would run agent-sync doctor"
@@ -305,6 +312,7 @@ case "$cmd" in
         fi
         echo "━━━ agent-sync fix ━━━"
         bash "$SCRIPTS/sync-skills.sh" --method=symlink
+        python3 "$SCRIPTS/sync_hermes.py"
         bash "$SCRIPTS/sync-mcp.sh"
         bash "$SCRIPTS/sync-rules.sh"
         exec python3 "$SCRIPTS/agent-doctor.py"

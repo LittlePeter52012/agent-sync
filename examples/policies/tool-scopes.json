@@ -6,6 +6,15 @@
       ]
     }
   },
+  "hooks": {
+    "codex": {
+      "required_events": {
+        "SessionStart": [
+          "example-lifecycle-hook"
+        ]
+      }
+    }
+  },
   "plugins": {
     "opencode": {
       "required": []

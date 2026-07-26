@@ -11,6 +11,7 @@ SYNC_SKILLS = REPO / "scripts" / "sync-skills.sh"
 SYNC_MCP = REPO / "scripts" / "sync-mcp.sh"
 LIST_SYNC = REPO / "scripts" / "list-sync.sh"
 VERIFY = REPO / "scripts" / "verify-all.sh"
+LIB = REPO / "scripts" / "lib.sh"
 
 
 class AntigravitySurfaceTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class AntigravitySurfaceTests(unittest.TestCase):
             encoding="utf-8",
         )
         (self.hub / "mcp" / "retired-servers.json").write_text(
-            json.dumps({"retiredServers": []}),
+            json.dumps({"retiredServers": ["todoist"]}),
             encoding="utf-8",
         )
 
@@ -76,6 +77,29 @@ class AntigravitySurfaceTests(unittest.TestCase):
             )
 
     def test_mcp_sync_preserves_local_servers_and_prepares_caches(self):
+        gemini_settings = self.home / ".gemini" / "settings.json"
+        gemini_settings.parent.mkdir(parents=True)
+        gemini_settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {"PreCompress": [{"command": "/bin/sh"}]},
+                    "mcpServers": {
+                        "local-only": {"command": "/bin/sh"},
+                        "shared": {
+                            "command": "/bin/sh",
+                            "env": {"CANONICAL_SETTING": "kept"},
+                        },
+                        "SHARED": {
+                            "command": "/bin/sh",
+                            "env": {"ALIAS_ONLY_SETTING": "kept"},
+                        },
+                        "todoist": {"command": "/bin/sh"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        gemini_settings.chmod(0o644)
         roots = (
             ".gemini/config",
             ".gemini/antigravity",
@@ -100,6 +124,24 @@ class AntigravitySurfaceTests(unittest.TestCase):
             text=True,
         )
 
+        gemini_after = json.loads(gemini_settings.read_text(encoding="utf-8"))
+        self.assertEqual(
+            set(gemini_after["mcpServers"]),
+            {"shared", "local-only"},
+        )
+        self.assertEqual(
+            gemini_after["mcpServers"]["shared"]["env"]["CANONICAL_SETTING"],
+            "kept",
+        )
+        self.assertEqual(
+            gemini_after["mcpServers"]["shared"]["env"]["ALIAS_ONLY_SETTING"],
+            "kept",
+        )
+        self.assertEqual(
+            gemini_after["hooks"],
+            {"PreCompress": [{"command": "/bin/sh"}]},
+        )
+        self.assertEqual(gemini_settings.stat().st_mode & 0o777, 0o644)
         for relative in roots:
             root = self.home / relative
             names = json.loads(
@@ -138,6 +180,7 @@ class AntigravitySurfaceTests(unittest.TestCase):
             check=True,
         ).stdout
         for label in (
+            "Gemini CLI",
             "Gemini global",
             "Antigravity App",
             "Antigravity CLI",
@@ -169,6 +212,85 @@ class AntigravitySurfaceTests(unittest.TestCase):
         )
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("Antigravity CLI shared MCP 0/1", failed.stdout)
+
+    def test_verify_rejects_skill_copy_that_is_not_hub_managed(self):
+        subprocess.run(
+            ["bash", str(SYNC_SKILLS)],
+            env=self.env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        stale = self.home / ".codex" / "skills" / "shared-skill"
+        stale.unlink()
+        stale.mkdir()
+        (stale / "SKILL.md").write_text("# stale copy\n", encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(VERIFY)],
+            env=self.env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Hub-managed", result.stdout)
+
+    def test_hub_managed_check_accepts_symlinked_hub_root(self):
+        linked_hub = Path(self.tempdir.name) / "linked-hub"
+        linked_hub.symlink_to(self.hub, target_is_directory=True)
+        destination = self.home / ".codex" / "skills" / "shared-skill"
+        destination.parent.mkdir(parents=True)
+        destination.symlink_to(linked_hub / "skills" / "shared-skill")
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; skill_is_hub_managed "$2" "$3"',
+                "bash",
+                str(LIB),
+                str(destination),
+                str(linked_hub / "skills" / "shared-skill"),
+            ],
+            env=self.env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_force_sync_backs_up_same_named_skill_per_target(self):
+        stale_roots = (
+            self.home / ".gemini" / "config" / "skills",
+            self.home / ".gemini" / "antigravity" / "skills",
+        )
+        for index, root in enumerate(stale_roots):
+            skill = root / "shared-skill"
+            skill.mkdir(parents=True)
+            (skill / "marker.txt").write_text(
+                f"copy-{index}\n",
+                encoding="utf-8",
+            )
+
+        subprocess.run(
+            ["bash", str(SYNC_SKILLS), "--force"],
+            env=self.env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        markers = sorted(
+            path.read_text(encoding="utf-8").strip()
+            for path in (self.hub / ".sync-backups").rglob("marker.txt")
+        )
+        backup_roots = {
+            path.parents[1].name
+            for path in (self.hub / ".sync-backups").rglob("marker.txt")
+        }
+        self.assertEqual(markers, ["copy-0", "copy-1"])
+        self.assertEqual(len(backup_roots), 2)
 
 
 if __name__ == "__main__":

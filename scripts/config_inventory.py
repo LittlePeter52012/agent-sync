@@ -114,9 +114,33 @@ def _source_specs(home: Path) -> list[tuple[str, str, Path, str]]:
     specs = [
         ("cursor", "Cursor", home / ".cursor" / "mcp.json", "mcpServers"),
         (
-            "antigravity",
-            "Gemini / Antigravity",
+            "gemini",
+            "Gemini CLI",
+            home / ".gemini" / "settings.json",
+            "mcpServers",
+        ),
+        (
+            "gemini-global",
+            "Gemini global",
             home / ".gemini" / "config" / "mcp_config.json",
+            "mcpServers",
+        ),
+        (
+            "antigravity-app",
+            "Antigravity App",
+            home / ".gemini" / "antigravity" / "mcp_config.json",
+            "mcpServers",
+        ),
+        (
+            "antigravity-cli",
+            "Antigravity CLI",
+            home / ".gemini" / "antigravity-cli" / "mcp_config.json",
+            "mcpServers",
+        ),
+        (
+            "antigravity-ide",
+            "Antigravity IDE",
+            home / ".gemini" / "antigravity-ide" / "mcp_config.json",
             "mcpServers",
         ),
         ("claude", "Claude", home / ".claude.json", "mcpServers"),
@@ -143,6 +167,17 @@ def _source_specs(home: Path) -> list[tuple[str, str, Path, str]]:
     return specs
 
 
+def _duplicate_names(names: list[str]) -> list[list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for name in names:
+        grouped.setdefault(name.casefold(), []).append(name)
+    return [
+        sorted(values)
+        for values in grouped.values()
+        if len(values) > 1
+    ]
+
+
 def collect_inventory(home: Path, hub: Path) -> list[dict[str, Any]]:
     """Return only metadata needed to assess MCP source health."""
     retired_names = _read_retired(hub)
@@ -167,8 +202,16 @@ def collect_inventory(home: Path, hub: Path) -> list[dict[str, Any]]:
             and (_command(config) is None or not _command_available(_command(config) or ""))
         )
         mcp_names = sorted(enabled, key=str.lower)
+        duplicate_names = _duplicate_names(mcp_names)
         exists = path.exists()
-        ready = bool(exists and mcp_names and not invalid and not retired and not missing_commands)
+        ready = bool(
+            exists
+            and mcp_names
+            and not invalid
+            and not retired
+            and not missing_commands
+            and not duplicate_names
+        )
         try:
             modified = path.stat().st_mtime if exists else 0.0
         except OSError:
@@ -187,6 +230,7 @@ def collect_inventory(home: Path, hub: Path) -> list[dict[str, Any]]:
                 "shared_count": shared_count,
                 "tool_only_count": len(mcp_names) - shared_count,
                 "retired": retired,
+                "duplicate_names": duplicate_names,
                 "missing_commands": missing_commands,
                 "modified": modified,
                 "ready": ready,

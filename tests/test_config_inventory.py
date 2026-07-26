@@ -160,6 +160,69 @@ class ConfigInventoryTests(unittest.TestCase):
         self.assertEqual(record["retired"], ["retired-server"])
         self.assertFalse(record["ready"])
 
+    def test_inventory_covers_gemini_cli_and_each_antigravity_surface(self):
+        sources = {
+            "gemini": (".gemini/settings.json", "mcpServers"),
+            "gemini-global": (
+                ".gemini/config/mcp_config.json",
+                "mcpServers",
+            ),
+            "antigravity-app": (
+                ".gemini/antigravity/mcp_config.json",
+                "mcpServers",
+            ),
+            "antigravity-cli": (
+                ".gemini/antigravity-cli/mcp_config.json",
+                "mcpServers",
+            ),
+            "antigravity-ide": (
+                ".gemini/antigravity-ide/mcp_config.json",
+                "mcpServers",
+            ),
+        }
+        for relative, bucket in sources.values():
+            path = self.home / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({bucket: {"shared": {"command": "/bin/sh"}}}),
+                encoding="utf-8",
+            )
+
+        module = load_inventory_module()
+        records = {
+            item["tool"]: item
+            for item in module.collect_inventory(self.home, self.hub)
+        }
+
+        for tool in sources:
+            self.assertIn(tool, records)
+            self.assertEqual(records[tool]["shared_count"], 1)
+
+    def test_inventory_flags_case_insensitive_duplicate_server_names(self):
+        settings = self.home / ".gemini" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "/bin/sh"},
+                        "SHARED": {"command": "/bin/sh"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        module = load_inventory_module()
+        record = next(
+            item
+            for item in module.collect_inventory(self.home, self.hub)
+            if item["tool"] == "gemini"
+        )
+
+        self.assertEqual(record["duplicate_names"], [["SHARED", "shared"]])
+        self.assertFalse(record["ready"])
+
     def test_inventory_marks_non_object_json_invalid(self):
         cursor = self.home / ".cursor"
         cursor.mkdir(parents=True)

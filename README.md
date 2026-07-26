@@ -9,6 +9,7 @@ Your personal configuration belongs in a **separate private hub** (default `~/.c
 Supported tools:
 
 - Cursor
+- Gemini CLI
 - Gemini global configuration
 - Antigravity App
 - Antigravity CLI (`agy`)
@@ -17,6 +18,7 @@ Supported tools:
 - Codex
 - OpenCode
 - VS Code GitHub Copilot
+- Hermes (shared Skills through native `skills.external_dirs`)
 - Multica (optional explicit control-plane adapter)
 
 ## Install
@@ -37,11 +39,14 @@ agent-sync sync --from vscode --dry-run
 agent-sync sync --from vscode
 ```
 
-Supported sources are `vscode`, `cursor`, `antigravity`, `opencode`, `codex`,
-and `claude`. `sources` is read-only: healthy configurations rank before broken
-ones, shared-MCP coverage ranks first, lower tool-only drift ranks second,
-top-level tools rank before profile replicas, and modification time is only a
-final tie-breaker. Agent Sync never promotes a source automatically.
+Supported sources are `vscode`, `cursor`, `gemini`, `gemini-global`,
+`antigravity`, `antigravity-app`, `antigravity-cli`, `antigravity-ide`,
+`opencode`, `codex`, and `claude`. `gemini` means the real Gemini CLI user
+settings; the legacy compatibility name `antigravity` means
+`gemini-global`. `sources` is read-only: healthy configurations rank before
+broken ones, shared-MCP coverage ranks first, lower tool-only drift ranks
+second, top-level tools rank before profile replicas, and modification time is
+only a final tie-breaker. Agent Sync never promotes a source automatically.
 
 `sync --from` shows added, changed, removed, and unchanged MCP names before
 asking for confirmation. It creates a minimal private Hub automatically on first
@@ -63,7 +68,7 @@ flowchart TB
     PROMOTE["2 · agent-sync sync --from TOOL<br/>Explicit preview → Confirm once"]
     HUB[("3 · Private Agent Hub<br/>Skills · MCP · Rules<br/>Single source of truth")]
     SYNC["4 · agent-sync sync<br/>Distribute and convert for every tool"]
-    TARGETS["Claude · Codex / ChatGPT · Cursor<br/>Gemini global · Antigravity App / CLI / IDE<br/>OpenCode · VS Code / Copilot"]
+    TARGETS["Claude · Codex / ChatGPT · Cursor · Hermes<br/>Gemini CLI · Gemini global · Antigravity App / CLI / IDE<br/>OpenCode · VS Code / Copilot"]
     CHECK{"5 · agent-sync doctor<br/>Is everything healthy?"}
     READY["Ready to use<br/>The same shared capabilities everywhere"]
     FIX["agent-sync fix<br/>Repair → Re-sync → Verify"]
@@ -108,20 +113,29 @@ configuration consumers:
 
 | Surface | Skills | MCP |
 |---------|--------|-----|
+| Gemini CLI | `~/.agents/skills` (official alias) | `~/.gemini/settings.json` |
 | Gemini global | `~/.gemini/config/skills` | `~/.gemini/config/mcp_config.json` |
 | Antigravity App | `~/.gemini/antigravity/skills` | `~/.gemini/antigravity/mcp_config.json` |
 | Antigravity CLI | `~/.gemini/antigravity-cli/skills` | `~/.gemini/antigravity-cli/mcp_config.json` |
 | Antigravity IDE | `~/.gemini/antigravity-ide/skills` | `~/.gemini/antigravity-ide/mcp_config.json` |
 
-The standalone CLI executable is `agy`. A local executable named
+Gemini CLI is the `gemini` executable. Agent Sync uses its real user MCP
+configuration, `~/.gemini/settings.json`, while keeping hooks and unrelated
+settings intact. Gemini CLI discovers Hub Skills through its official
+`~/.agents/skills` alias, so Agent Sync does not create a second
+`~/.gemini/skills` copy.
+
+The standalone Antigravity CLI executable is `agy`. A local executable named
 `antigravity` may only launch the desktop app and is not used as proof that the
 CLI is installed. `agent-sync list`, `verify`, and `doctor` report all four
-surfaces separately. The compatibility source name `--from antigravity`
+Antigravity surfaces plus Gemini CLI separately. The compatibility source name `--from antigravity`
 continues to promote from the Gemini global MCP file.
 
 Skills remain Hub-owned links. MCP synchronization merges shared servers into
 each surface while preserving local product-only servers and local credential
-values. For App, CLI, and IDE, Agent Sync also creates missing per-server cache
+values. It removes retired servers and case-only aliases of canonical shared
+server names, preventing duplicate tool exposure such as `MinerU` plus
+`mineru`. For App, CLI, and IDE, Agent Sync also creates missing per-server cache
 directories. Shared rules still use the single global
 `~/.gemini/GEMINI.md`; root-specific rule copies are intentionally not created.
 
@@ -156,7 +170,7 @@ directories. Shared rules still use the single global
 
 ```bash
 agent-sync init          # create hub from examples/
-agent-sync sync          # Hub → skills + MCP + rules + verify
+agent-sync sync          # Hub → skills + Hermes registration + MCP + rules + verify
 agent-sync sources       # rank local MCP configurations without changing them
 agent-sync sync --from vscode --dry-run
 agent-sync sync --from vscode # VS Code → Hub → all tools
@@ -165,6 +179,7 @@ agent-sync all           # backward-compatible alias for full Hub sync
 agent-sync skills        # symlink whitelist skills
 agent-sync mcp           # merge shared MCP (keeps tool-only servers)
 agent-sync rules         # inject rules/*.md
+agent-sync hermes        # register ~/.agents/skills in Hermes external_dirs
 agent-sync multica       # read-only check of allowlisted Multica state
 agent-sync multica --apply # explicitly apply allowlisted Multica changes
 agent-sync list          # coverage matrix
@@ -186,8 +201,9 @@ agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
 ```
 
 `doctor` is local and read-only. It reports installed agent surfaces, configured
-model/provider names, skill and shared-MCP coverage, tool-only MCP executable
-health, optional CLI-backed Skill dependencies, retired MCP residue, plugin/MCP
+model/provider names, Skill coverage and canonical Hub ownership, shared-MCP
+coverage, tool-only MCP executable health, optional CLI-backed Skill
+dependencies, required lifecycle-hook wiring, retired MCP residue, plugin/MCP
 scope drift, and duplicate synced rules.
 `doctor --runtime` adds bounded OpenCode and Claude CLI probes. Raw command
 output is discarded after status parsing. Reports never print MCP values,
@@ -263,6 +279,13 @@ servers without installing, uninstalling, or removing anything. Put a policy at
       "required_commands": ["example-cli"]
     }
   },
+  "hooks": {
+    "codex": {
+      "required_events": {
+        "SessionStart": ["example-lifecycle-hook"]
+      }
+    }
+  },
   "plugins": {
     "opencode": {
       "required": ["example-opencode-plugin"]
@@ -290,10 +313,18 @@ are checked directly. The check is read-only: Agent Sync never installs or
 updates the CLI. Prefer this pattern over adding a duplicate shared MCP when
 the Agents can already invoke the local command through a Skill.
 
+`hooks.<tool>.required_events` maps a native event name to command fragments
+that must be present under that event. Doctor verifies Codex, Gemini, and
+Cursor wiring and the leading absolute executable without running the hook.
+Unlisted product-native hooks remain outside Agent Sync.
+
 `allowed_tool_only` rejects accidental MCP drift while preserving the names
 listed for that Agent. `required_tool_only` also reports when a native
 integration disappears. Matching is case-insensitive. Supported keys are
-`antigravity`, `cursor`, `claude`, `opencode`, `codex`, and `vscode`.
+`gemini`, `gemini-global`, `antigravity-app`, `antigravity-cli`,
+`antigravity-ide`, `cursor`, `claude`, `opencode`, `codex`, and `vscode`.
+The v1.8 key `antigravity` remains a compatibility alias for
+`gemini-global`.
 
 The ownership rule is:
 
@@ -302,6 +333,7 @@ The ownership rule is:
 | Shared Skill | Hub manifest and `skills/` | Symlink to every supported Agent |
 | CLI used by a shared Skill | Local package manager or pinned binary; optional Hub health policy | Audit availability only |
 | Shared MCP | Hub `mcp/shared-servers.json` | Merge into every supported Agent |
+| Lifecycle hook | Native hook file plus optional Hub health policy | Audit required wiring only |
 | Tool-only MCP | Its native Agent config | Preserve and audit only |
 | Native plugin/extension | Product plugin manager | Never synchronize |
 
@@ -321,7 +353,7 @@ For the **tool itself** and **hub git backup**:
 
 ```bash
 agent-sync update          # pull tool updates (--ff-only, safe)
-agent-sync update --sync   # pull + re-run skills/mcp/rules
+agent-sync update --sync   # pull + re-run skills/Hermes/MCP/rules
 ```
 
 Optional in `manifest.yaml` (opt-in):
@@ -344,7 +376,7 @@ Environment:
   skills/<name>/SKILL.md
   mcp/shared-servers.json    # shared MCP (use ${ENV} placeholders)
   mcp/retired-servers.json   # shared MCP names intentionally removed
-  policies/tool-scopes.json  # optional plugin and tool-only MCP scope audit
+  policies/tool-scopes.json  # optional CLI, hook, plugin, and tool-only MCP audit
   multica/desired-state.json # optional explicit Multica allowlist
   multica/squads/*.md         # optional Squad instructions
   rules/*.md                 # injected into CLAUDE.md / AGENTS.md / GEMINI.md / Copilot
@@ -381,6 +413,17 @@ agent-sync push -m "promote preferred MCP configuration"
 ```
 
 On another machine, run `agent-sync pull` followed by `agent-sync sync`.
+
+### Hermes shared Skills
+
+Hermes natively supports external Skill directories. `agent-sync hermes`
+adds `~/.agents/skills` to `skills.external_dirs` without replacing existing
+entries, and full sync runs this step automatically when Hermes is configured.
+Hermes-local Skills remain under `~/.hermes/skills`.
+
+This integration is Skills-only. Hermes MCP configuration remains product
+native until a secret-preserving YAML merge is available; Agent Sync does not
+claim shared-MCP coverage for Hermes.
 
 ## Secrets
 

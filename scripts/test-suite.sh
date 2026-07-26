@@ -47,6 +47,7 @@ check_skills_dir() {
 check_skills_dir "Claude Code" "$HOME/.claude/skills"
 check_skills_dir "Cursor" "$HOME/.cursor/skills"
 check_skills_dir "Codex" "$HOME/.codex/skills"
+check_skills_dir "Gemini CLI" "$HOME/.agents/skills"
 check_skills_dir "Gemini global" "$HOME/.gemini/config/skills"
 check_skills_dir "Antigravity App" "$HOME/.gemini/antigravity/skills"
 check_skills_dir "Antigravity CLI" "$HOME/.gemini/antigravity-cli/skills"
@@ -54,27 +55,30 @@ check_skills_dir "Antigravity IDE" "$HOME/.gemini/antigravity-ide/skills"
 check_skills_dir "OpenCode" "$HOME/.config/opencode/skills"
 check_skills_dir "Copilot" "$HOME/.copilot/skills"
 check_skills_dir "Agents" "$HOME/.agents/skills"
+if [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ]; then
+  if "$PY" "$SCRIPT_DIR/sync_hermes.py" --check >/dev/null; then
+    ok "Hermes external Skills"
+  else
+    bad "Hermes external Skills"
+  fi
+fi
 
 echo ""
 echo "[3] Symlinks point at hub"
 check_links() {
   local tool="$1" base="$2"
-  local broken=0 s target
+  local broken=0 s
   for s in $SKILLS; do
     if [ ! -f "$base/$s/SKILL.md" ]; then broken=$((broken+1)); continue; fi
-    if [ -L "$base/$s" ]; then
-      target=$(readlink "$base/$s" 2>/dev/null || true)
-      case "$target" in
-        "$HUB_ROOT/skills"/*) ;;
-        *) broken=$((broken+1)) ;;
-      esac
-    fi
+    skill_is_hub_managed "$base/$s" "$HUB_ROOT/skills/$s" \
+      || broken=$((broken+1))
   done
   if [ "$broken" -eq 0 ]; then ok "$tool symlinks"; else bad "$tool has $broken bad links"; fi
 }
 check_links "Claude Code" "$HOME/.claude/skills"
 check_links "Cursor" "$HOME/.cursor/skills"
 check_links "Codex" "$HOME/.codex/skills"
+check_links "Gemini CLI" "$HOME/.agents/skills"
 check_links "Gemini global" "$HOME/.gemini/config/skills"
 check_links "Antigravity App" "$HOME/.gemini/antigravity/skills"
 check_links "Antigravity CLI" "$HOME/.gemini/antigravity-cli/skills"
@@ -93,6 +97,7 @@ hub = Path(sys.argv[1])
 shared = [k.lower() for k in json.loads((hub/"mcp/shared-servers.json").read_text()).get("mcpServers", {})]
 home = Path.home()
 checks = [
+    ("Gemini CLI", home/".gemini/settings.json", "json", "mcpServers"),
     ("Gemini global", home/".gemini/config/mcp_config.json", "json", "mcpServers"),
     ("Antigravity App", home/".gemini/antigravity/mcp_config.json", "json", "mcpServers"),
     ("Antigravity CLI", home/".gemini/antigravity-cli/mcp_config.json", "json", "mcpServers"),
@@ -116,7 +121,7 @@ for name, path, kind, key in checks:
     print(f"  {status}  {name} MCP {have}/{len(shared)}")
 sys.exit(fail)
 PY
-  then PASS=$((PASS+9)); else FAIL=$((FAIL+9)); fi
+  then PASS=$((PASS+10)); else FAIL=$((FAIL+10)); fi
 else
   ok "no shared MCP in hub (skip)"
 fi

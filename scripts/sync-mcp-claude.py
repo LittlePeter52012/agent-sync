@@ -34,7 +34,11 @@ def resolve(value: object, donors: dict[str, str]) -> object | None:
 def donor_maps() -> dict[str, dict[str, str]]:
     """Read only concrete values already configured for the same shared MCP."""
     result: dict[str, dict[str, str]] = {}
-    for path in (Path.home() / ".cursor" / "mcp.json", Path.home() / ".gemini" / "config" / "mcp_config.json"):
+    for path in (
+        Path.home() / ".cursor" / "mcp.json",
+        Path.home() / ".gemini" / "settings.json",
+        Path.home() / ".gemini" / "config" / "mcp_config.json",
+    ):
         if not path.exists():
             continue
         try:

@@ -63,6 +63,42 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("safe-model", codex["models"])
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
 
+    def test_doctor_reports_skill_copy_that_is_not_hub_managed(self):
+        report = json.loads(self.run_doctor().stdout)
+        codex = next(
+            agent for agent in report["agents"]
+            if agent["name"] == "Codex / ChatGPT"
+        )
+        messages = "\n".join(item["message"] for item in report["findings"])
+
+        self.assertEqual(codex["managed_skills"], {"configured": 0, "expected": 1})
+        self.assertIn(
+            "Codex / ChatGPT skill ownership is not Hub-managed.",
+            messages,
+        )
+
+    def test_doctor_text_shows_managed_skill_coverage(self):
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+        }
+
+        result = subprocess.run(
+            ["python3", str(DOCTOR)],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        self.assertIn("Managed", result.stdout)
+        codex = next(
+            line for line in result.stdout.splitlines()
+            if line.startswith("Codex / ChatGPT")
+        )
+        self.assertRegex(codex, r"1/1\s+0/1")
+
     def test_json_flags_missing_supported_agent_configuration(self):
         report = json.loads(self.run_doctor().stdout)
         cursor = next(agent for agent in report["agents"] if agent["name"] == "Cursor")
@@ -129,6 +165,119 @@ class AgentDoctorTests(unittest.TestCase):
             ["Antigravity CLI skill coverage is incomplete."],
         )
 
+    def test_doctor_reports_gemini_cli_from_actual_user_settings(self):
+        agents_skill = self.home / ".agents" / "skills" / "example"
+        agents_skill.parent.mkdir(parents=True)
+        agents_skill.symlink_to(self.hub / "skills" / "example")
+        settings = self.home / ".gemini" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "/bin/sh"}}}
+            ),
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        record = next(
+            agent for agent in report["agents"]
+            if agent["name"] == "Gemini CLI"
+        )
+
+        self.assertEqual(record["skills"], {"configured": 1, "expected": 1})
+        self.assertEqual(
+            record["managed_skills"],
+            {"configured": 1, "expected": 1},
+        )
+        self.assertEqual(record["mcp"], {"configured": 1, "expected": 1})
+
+    def test_doctor_reports_case_insensitive_mcp_aliases(self):
+        settings = self.home / ".gemini" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "/bin/sh"},
+                        "SHARED": {"command": "/bin/sh"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        messages = "\n".join(
+            item["message"]
+            for item in json.loads(self.run_doctor().stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Duplicate MCP aliases in Gemini CLI: SHARED, shared",
+            messages,
+        )
+
+    def test_doctor_reports_hermes_external_shared_skills(self):
+        agents_skill = self.home / ".agents" / "skills" / "example"
+        agents_skill.parent.mkdir(parents=True)
+        agents_skill.symlink_to(self.hub / "skills" / "example")
+        hermes = self.home / ".hermes"
+        hermes.mkdir()
+        (hermes / "config.yaml").write_text(
+            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        record = next(
+            agent for agent in report["agents"]
+            if agent["name"] == "Hermes"
+        )
+
+        self.assertEqual(record["skills"], {"configured": 1, "expected": 1})
+        self.assertEqual(
+            record["managed_skills"],
+            {"configured": 1, "expected": 1},
+        )
+        self.assertEqual(record["mcp"], {"configured": 0, "expected": 0})
+
+    def test_doctor_treats_absent_hermes_as_optional(self):
+        report = json.loads(self.run_doctor().stdout)
+        names = {agent["name"] for agent in report["agents"]}
+        messages = "\n".join(
+            item["message"] for item in report["findings"]
+        )
+
+        self.assertNotIn("Hermes", names)
+        self.assertNotIn(
+            "Hermes is supported but has no local configuration",
+            messages,
+        )
+        self.assertNotIn("Hermes skill coverage is incomplete", messages)
+
+    def test_doctor_honors_custom_hermes_home(self):
+        agents_skill = self.home / ".agents" / "skills" / "example"
+        agents_skill.parent.mkdir(parents=True)
+        agents_skill.symlink_to(self.hub / "skills" / "example")
+        custom_home = self.home / "custom-hermes"
+        custom_home.mkdir()
+        (custom_home / "config.yaml").write_text(
+            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            encoding="utf-8",
+        )
+
+        report = json.loads(
+            self.run_doctor(
+                extra_env={"HERMES_HOME": str(custom_home)}
+            ).stdout
+        )
+        record = next(
+            agent for agent in report["agents"]
+            if agent["name"] == "Hermes"
+        )
+
+        self.assertTrue(record["config_present"])
+        self.assertEqual(record["skills"], {"configured": 1, "expected": 1})
+
     def test_entrypoint_dispatches_doctor(self):
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
         result = subprocess.run(
@@ -161,7 +310,30 @@ class AgentDoctorTests(unittest.TestCase):
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
         result = subprocess.run(["bash", str(LIST_SYNC)], env=env, check=True, capture_output=True, text=True)
 
-        self.assertRegex(result.stdout, re.compile(r"^Claude\s+—\s+0/1$", re.M))
+        self.assertRegex(
+            result.stdout,
+            re.compile(r"^Claude\s+—\s+—\s+0/1$", re.M),
+        )
+
+    def test_list_sync_distinguishes_present_from_hub_managed_skills(self):
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+        }
+
+        result = subprocess.run(
+            ["bash", str(LIST_SYNC)],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        codex = next(
+            line for line in result.stdout.splitlines()
+            if line.startswith("Codex ")
+        )
+
+        self.assertRegex(codex, r"Codex\s+1/1\s+0/1\s+—")
 
     def test_fix_dry_run_describes_repairs_without_writing(self):
         target = self.home / ".codex" / "AGENTS.md"
@@ -182,24 +354,7 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("deduplicate synced rules", result.stdout)
         self.assertEqual(target.read_text(), before)
 
-    def test_claude_mcp_sync_resolves_shared_placeholder_from_cursor(self):
-        cursor = self.home / ".cursor"
-        cursor.mkdir()
-        (cursor / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "shared": {
-                            "command": "shared-mcp",
-                            "env": {
-                                "OPENAPI_MCP_HEADERS": "donor-value",
-                                "OUTPUT_DIR": "donor-output",
-                            },
-                        }
-                    }
-                }
-            )
-        )
+    def test_claude_mcp_sync_resolves_shared_placeholder_from_donors(self):
         canonical = self.tempdir.name + "/shared.json"
         Path(canonical).write_text(
             json.dumps(
@@ -221,10 +376,90 @@ class AgentDoctorTests(unittest.TestCase):
         fake_claude.write_text(f'#!/bin/sh\n[ "$3" = "list" ] && exit 0\nprintf "%s\\n" "$*" > "{log}"\n')
         fake_claude.chmod(0o755)
         env = os.environ | {"HOME": str(self.home), "CLAUDE_BIN": str(fake_claude)}
-        subprocess.run(["python3", str(SYNC_CLAUDE_MCP), canonical], env=env, check=True, capture_output=True, text=True)
+        for relative in (
+            ".cursor/mcp.json",
+            ".gemini/settings.json",
+        ):
+            with self.subTest(relative=relative):
+                for previous in (
+                    self.home / ".cursor" / "mcp.json",
+                    self.home / ".gemini" / "settings.json",
+                ):
+                    previous.unlink(missing_ok=True)
+                donor = self.home / relative
+                donor.parent.mkdir(parents=True, exist_ok=True)
+                donor.write_text(
+                    json.dumps(
+                        {
+                            "mcpServers": {
+                                "shared": {
+                                    "command": "shared-mcp",
+                                    "env": {
+                                        "OPENAPI_MCP_HEADERS": "donor-value",
+                                        "OUTPUT_DIR": "donor-output",
+                                    },
+                                }
+                            }
+                        }
+                    )
+                )
+                subprocess.run(
+                    ["python3", str(SYNC_CLAUDE_MCP), canonical],
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
 
-        self.assertIn("OPENAPI_MCP_HEADERS=donor-value", log.read_text())
-        self.assertIn("OUTPUT_DIR=donor-output", log.read_text())
+                self.assertIn(
+                    "OPENAPI_MCP_HEADERS=donor-value",
+                    log.read_text(),
+                )
+                self.assertIn("OUTPUT_DIR=donor-output", log.read_text())
+
+    def test_doctor_resolves_placeholder_from_gemini_cli_settings(self):
+        (self.hub / "mcp" / "shared-servers.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "/bin/sh",
+                            "env": {
+                                "GEMINI_ONLY_TOKEN": "${GEMINI_ONLY_TOKEN}"
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = self.home / ".gemini" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "/bin/sh",
+                            "env": {
+                                "GEMINI_ONLY_TOKEN": "marker-value"
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        messages = "\n".join(
+            item["message"]
+            for item in json.loads(self.run_doctor().stdout)["findings"]
+        )
+
+        self.assertNotIn(
+            "Unresolved Hub placeholder for shared: GEMINI_ONLY_TOKEN",
+            messages,
+        )
 
     def test_vscode_profile_without_mcp_is_reported_and_synced(self):
         profile = self.home / "Library" / "Application Support" / "Code" / "User" / "profiles" / "paper"
@@ -447,6 +682,43 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertNotIn("llm_for_zotero", messages)
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
 
+    def test_doctor_accepts_legacy_antigravity_policy_key(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "antigravity": {
+                            "allowed_tool_only": ["legacy-native"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = self.home / ".gemini" / "config" / "mcp_config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "/bin/sh"},
+                        "legacy-native": {"command": "/bin/sh"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        messages = "\n".join(
+            item["message"]
+            for item in json.loads(self.run_doctor().stdout)["findings"]
+        )
+
+        self.assertNotIn("unsupported MCP tool: antigravity", messages)
+        self.assertNotIn("Unexpected tool-only MCP in Gemini global", messages)
+
     def test_doctor_reports_invalid_tool_only_mcp_policy(self):
         policy = self.hub / "policies"
         policy.mkdir()
@@ -610,6 +882,173 @@ class AgentDoctorTests(unittest.TestCase):
 
         self.assertIn(
             "Skill dependency policy has invalid required_commands for example",
+            messages,
+        )
+
+    def test_doctor_audits_required_lifecycle_hooks_without_exposing_commands(self):
+        policy = self.hub / "policies"
+        policy.mkdir(exist_ok=True)
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "codex": {
+                            "required_events": {
+                                "SessionStart": [
+                                    "TOKEN_SHOULD_NOT_APPEAR session-start"
+                                ],
+                                "Stop": ["mempalace hook run --hook stop"],
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        hooks = self.home / ".codex" / "hooks.json"
+        hooks.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": (
+                                            "/bin/sh TOKEN_SHOULD_NOT_APPEAR "
+                                            "session-start"
+                                        ),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor()
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertNotIn("SessionStart lifecycle hook is missing", messages)
+        self.assertIn("Codex / ChatGPT Stop lifecycle hook is missing.", messages)
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_reports_invalid_lifecycle_hook_policy(self):
+        policy = self.hub / "policies"
+        policy.mkdir(exist_ok=True)
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "unsupported": {
+                            "required_events": {
+                                "Stop": ["example"]
+                            }
+                        },
+                        "cursor": {
+                            "required_events": "not-an-object"
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        messages = "\n".join(
+            item["message"]
+            for item in json.loads(self.run_doctor().stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Hook scope policy has an unsupported tool: unsupported",
+            messages,
+        )
+        self.assertIn(
+            "Hook scope policy has invalid required_events for cursor.",
+            messages,
+        )
+
+    def test_doctor_reports_malformed_lifecycle_hook_command(self):
+        policy = self.hub / "policies"
+        policy.mkdir(exist_ok=True)
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "codex": {
+                            "required_events": {
+                                "SessionStart": ["session-start"],
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        hooks = self.home / ".codex" / "hooks.json"
+        hooks.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "command": (
+                                    '/bin/sh "TOKEN_SHOULD_NOT_APPEAR '
+                                    "session-start"
+                                )
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor()
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Codex / ChatGPT SessionStart lifecycle hook command is malformed.",
+            messages,
+        )
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_gemini_hook_findings_use_gemini_cli_label(self):
+        policy = self.hub / "policies"
+        policy.mkdir(exist_ok=True)
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "gemini": {
+                            "required_events": {
+                                "PreCompress": ["mempal_precompact_hook.sh"]
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        messages = "\n".join(
+            item["message"]
+            for item in json.loads(self.run_doctor().stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Gemini CLI PreCompress lifecycle hook is missing.",
+            messages,
+        )
+        self.assertNotIn(
+            "Gemini global PreCompress lifecycle hook is missing.",
             messages,
         )
 

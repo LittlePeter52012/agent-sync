@@ -39,9 +39,20 @@ else
         check "$skill @ hub" test -f "$HUB_ROOT/skills/$skill/SKILL.md"
         while IFS= read -r base; do
             label=$(basename "$(dirname "$base")")/$(basename "$base")
-            check "$skill @ $base" test -f "$base/$skill/SKILL.md"
+            check "$skill Hub-managed @ $base" \
+                skill_is_hub_managed \
+                "$base/$skill" \
+                "$HUB_ROOT/skills/$skill"
         done < <(skill_targets)
     done
+fi
+
+echo ""
+echo "[hermes]"
+if [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ]; then
+    check "Hermes uses ~/.agents/skills" "$PY" "$SCRIPT_DIR/sync_hermes.py" --check
+else
+    echo "  (Hermes not configured — skip)"
 fi
 
 echo ""
@@ -76,6 +87,7 @@ def codex_names(path):
     }
 
 targets = [
+    ("Gemini CLI", home / ".gemini/settings.json", "json", "mcpServers"),
     ("Gemini global", home / ".gemini/config/mcp_config.json", "json", "mcpServers"),
     ("Antigravity App", home / ".gemini/antigravity/mcp_config.json", "json", "mcpServers"),
     ("Antigravity CLI", home / ".gemini/antigravity-cli/mcp_config.json", "json", "mcpServers"),

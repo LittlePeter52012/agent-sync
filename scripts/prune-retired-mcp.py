@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import tempfile
@@ -25,9 +26,11 @@ def read_retired(path: Path) -> set[str]:
 
 def atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as handle:
+        os.fchmod(handle.fileno(), mode)
         handle.write(text)
         tmp = Path(handle.name)
     tmp.replace(path)

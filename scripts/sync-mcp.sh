@@ -11,6 +11,7 @@ MERGE_PY="$SYNC_HOME/scripts/merge-mcp.py"
 MERGE_CODEX="$SYNC_HOME/scripts/merge-mcp-codex.py"
 MERGE_CLAUDE="$SYNC_HOME/scripts/sync-mcp-claude.py"
 PRUNE_PY="$SYNC_HOME/scripts/prune-retired-mcp.py"
+PRUNE_ALIASES_PY="$SYNC_HOME/scripts/prune-mcp-aliases.py"
 RETIRED="$HUB_ROOT/mcp/retired-servers.json"
 
 prepare_antigravity_cache() {
@@ -45,6 +46,7 @@ if [ ! -f "$CANONICAL" ]; then
 fi
 
 TARGETS=(
+    "Gemini CLI|$HOME/.gemini/settings.json"
     "Gemini global|$HOME/.gemini/config/mcp_config.json"
     "Antigravity App|$HOME/.gemini/antigravity/mcp_config.json"
     "Antigravity CLI|$HOME/.gemini/antigravity-cli/mcp_config.json"
@@ -62,6 +64,7 @@ for entry in "${TARGETS[@]}"; do
     label="${entry%%|*}"
     target="${entry#*|}"
     echo "[mcp] → $label ($target)"
+    python3 "$PRUNE_ALIASES_PY" "$CANONICAL" "$target"
     python3 "$PRUNE_PY" "$RETIRED" "$target"
     python3 "$MERGE_PY" "$CANONICAL" "$target"
     case "$label" in

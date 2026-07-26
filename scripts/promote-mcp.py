@@ -76,13 +76,30 @@ def locate_source(source: str, home: Path) -> tuple[str, Path, str]:
     sources = {
         "cursor": (home / ".cursor" / "mcp.json", "cursor"),
         "antigravity": (home / ".gemini" / "config" / "mcp_config.json", "cursor"),
-        "gemini": (home / ".gemini" / "config" / "mcp_config.json", "cursor"),
+        "gemini": (home / ".gemini" / "settings.json", "cursor"),
+        "gemini-global": (home / ".gemini" / "config" / "mcp_config.json", "cursor"),
+        "antigravity-app": (
+            home / ".gemini" / "antigravity" / "mcp_config.json",
+            "cursor",
+        ),
+        "antigravity-cli": (
+            home / ".gemini" / "antigravity-cli" / "mcp_config.json",
+            "cursor",
+        ),
+        "antigravity-ide": (
+            home / ".gemini" / "antigravity-ide" / "mcp_config.json",
+            "cursor",
+        ),
         "opencode": (home / ".config" / "opencode" / "opencode.json", "opencode"),
         "codex": (home / ".codex" / "config.toml", "codex"),
         "claude": (home / ".claude.json", "cursor"),
     }
     if source not in sources:
-        supported = "vscode, cursor, antigravity, opencode, codex, claude"
+        supported = (
+            "vscode, cursor, gemini, gemini-global, antigravity, "
+            "antigravity-app, antigravity-cli, antigravity-ide, "
+            "opencode, codex, claude"
+        )
         raise PromotionError(f"Unknown source '{source}'. Supported sources: {supported}")
     path, kind = sources[source]
     return source, path, kind

@@ -7,17 +7,20 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from config_inventory import collect_inventory
+from sync_hermes import is_registered as hermes_skills_registered
 
 
 HOME = Path.home()
 HUB = Path(os.environ.get("AGENT_HUB_ROOT", HOME / ".config" / "agent-hub"))
 PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+HOOK_PARSE_ERROR = "<hook-parse-error>"
 
 
 def read_manifest_skills() -> list[str]:
@@ -82,6 +85,7 @@ def local_variable_names() -> set[str]:
     names = set(os.environ)
     paths = [
         HOME / ".cursor" / "mcp.json",
+        HOME / ".gemini" / "settings.json",
         HOME / ".gemini" / "config" / "mcp_config.json",
         HOME / ".claude.json",
         HOME / ".config" / "opencode" / "opencode.json",
@@ -174,6 +178,16 @@ def configured_mcp_findings() -> list[dict[str, str]]:
                 {
                     "severity": "attention",
                     "message": f"Retired MCP still configured in {record['label']}: {name}",
+                }
+            )
+        for names in record.get("duplicate_names", []):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        f"Duplicate MCP aliases in {record['label']}: "
+                        f"{', '.join(names)}"
+                    ),
                 }
             )
     return findings
@@ -342,6 +356,172 @@ def skill_dependency_findings() -> list[dict[str, str]]:
     return findings
 
 
+def hook_commands_for_event(path: Path, event: str) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    hooks = data.get("hooks", data) if isinstance(data, dict) else {}
+    if not isinstance(hooks, dict):
+        return []
+    values = hooks.get(event, [])
+    commands: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            command = value.get("command")
+            if isinstance(command, str):
+                commands.append(command)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(values)
+    return commands
+
+
+def hook_command_executable(command: str) -> str | None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return HOOK_PARSE_ERROR
+    for token in tokens:
+        if "=" in token and not token.startswith(("/", "./", "../")):
+            name = token.split("=", 1)[0]
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                continue
+        if token.startswith("/"):
+            candidate = Path(token)
+            if not (candidate.is_file() and os.access(candidate, os.X_OK)):
+                return candidate.name
+        break
+    return None
+
+
+def hook_scope_findings() -> list[dict[str, str]]:
+    path = HUB / "policies" / "tool-scopes.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    policies = data.get("hooks", {}) if isinstance(data, dict) else {}
+    if not isinstance(policies, dict):
+        return [
+            {
+                "severity": "attention",
+                "message": "Tool scope policy has an invalid hooks section.",
+            }
+        ]
+
+    configs = {
+        "codex": (
+            "Codex / ChatGPT",
+            HOME / ".codex" / "hooks.json",
+        ),
+        "gemini": (
+            "Gemini CLI",
+            HOME / ".gemini" / "settings.json",
+        ),
+        "cursor": (
+            "Cursor",
+            HOME / ".cursor" / "hooks.json",
+        ),
+    }
+    findings: list[dict[str, str]] = []
+    for tool, policy in policies.items():
+        if tool not in configs:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        "Hook scope policy has an unsupported tool: "
+                        f"{tool}"
+                    ),
+                }
+            )
+            continue
+        required = (
+            policy.get("required_events")
+            if isinstance(policy, dict)
+            else None
+        )
+        if not isinstance(required, dict):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        "Hook scope policy has invalid required_events "
+                        f"for {tool}."
+                    ),
+                }
+            )
+            continue
+        label, config = configs[tool]
+        for event, fragments in required.items():
+            if (
+                not isinstance(event, str)
+                or not isinstance(fragments, list)
+                or not all(
+                    isinstance(fragment, str) and fragment.strip()
+                    for fragment in fragments
+                )
+            ):
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            "Hook scope policy has an invalid event entry "
+                            f"for {tool}."
+                        ),
+                    }
+                )
+                continue
+            actual = hook_commands_for_event(config, event)
+            for fragment in fragments:
+                matched = next(
+                    (command for command in actual if fragment in command),
+                    None,
+                )
+                if matched is None:
+                    findings.append(
+                        {
+                            "severity": "attention",
+                            "message": (
+                                f"{label} {event} lifecycle hook is missing."
+                            ),
+                        }
+                    )
+                    continue
+                missing_executable = hook_command_executable(matched)
+                if missing_executable == HOOK_PARSE_ERROR:
+                    findings.append(
+                        {
+                            "severity": "attention",
+                            "message": (
+                                f"{label} {event} lifecycle hook command "
+                                "is malformed."
+                            ),
+                        }
+                    )
+                elif missing_executable:
+                    findings.append(
+                        {
+                            "severity": "attention",
+                            "message": (
+                                f"{label} {event} lifecycle hook executable "
+                                f"is missing: {missing_executable}"
+                            ),
+                        }
+                    )
+    return findings
+
+
 def mcp_scope_findings() -> list[dict[str, str]]:
     path = HUB / "policies" / "tool-scopes.json"
     if not path.exists():
@@ -360,7 +540,12 @@ def mcp_scope_findings() -> list[dict[str, str]]:
         ]
 
     labels = {
-        "antigravity": "Gemini / Antigravity",
+        "gemini": "Gemini CLI",
+        "gemini-global": "Gemini global",
+        "antigravity": "Gemini global",
+        "antigravity-app": "Antigravity App",
+        "antigravity-cli": "Antigravity CLI",
+        "antigravity-ide": "Antigravity IDE",
         "cursor": "Cursor",
         "claude": "Claude",
         "opencode": "OpenCode",
@@ -428,7 +613,12 @@ def mcp_scope_findings() -> list[dict[str, str]]:
                 }
             )
 
-        record = inventory.get(tool, {"mcp_names": []})
+        inventory_tool = (
+            "gemini-global"
+            if tool == "antigravity"
+            else tool
+        )
+        record = inventory.get(inventory_tool, {"mcp_names": []})
         actual = {
             name.casefold(): name
             for name in record["mcp_names"]
@@ -592,6 +782,21 @@ def count_skills(path: Path, skills: list[str]) -> dict[str, int]:
     return {"configured": sum((path / skill / "SKILL.md").exists() for skill in skills), "expected": len(skills)}
 
 
+def count_managed_skills(path: Path, skills: list[str]) -> dict[str, int]:
+    configured = 0
+    for skill in skills:
+        destination = path / skill
+        source = HUB / "skills" / skill
+        if not destination.is_symlink():
+            continue
+        try:
+            if destination.resolve() == source.resolve():
+                configured += 1
+        except (OSError, RuntimeError):
+            continue
+    return {"configured": configured, "expected": len(skills)}
+
+
 def count_mcp(names: set[str], shared: list[str]) -> dict[str, int]:
     shared_lower = {name.lower() for name in shared}
     return {"configured": len({name.lower() for name in names} & shared_lower), "expected": len(shared)}
@@ -616,7 +821,7 @@ def capability_labels(name: str, config: Path) -> list[str]:
         labels.extend(("browser", "computer-use"))
     elif name == "Cursor" and (HOME / ".cursor" / "extensions").exists():
         labels.append("extensions")
-    elif name == "Gemini global" and (HOME / ".gemini" / "extensions").exists():
+    elif name == "Gemini CLI" and (HOME / ".gemini" / "extensions").exists():
         labels.append("extensions")
     elif name in {"Antigravity App", "Antigravity CLI"}:
         root_name = "antigravity" if name == "Antigravity App" else "antigravity-cli"
@@ -634,7 +839,8 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
         ("Codex / ChatGPT", "codex", HOME / ".codex" / "config.toml", HOME / ".codex" / "skills", "toml", codex_mcp_keys, ("ChatGPT.app",)),
         ("Claude", "claude", HOME / ".claude.json", HOME / ".claude" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Claude.app",)),
         ("Cursor", "cursor", HOME / ".cursor" / "mcp.json", HOME / ".cursor" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Cursor.app",)),
-        ("Gemini global", "gemini", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Gemini.app",)),
+        ("Gemini CLI", "gemini", HOME / ".gemini" / "settings.json", HOME / ".agents" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ()),
+        ("Gemini global", "", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Gemini.app",)),
         ("Antigravity App", "", HOME / ".gemini" / "antigravity" / "mcp_config.json", HOME / ".gemini" / "antigravity" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Antigravity.app",)),
         ("Antigravity CLI", "agy", HOME / ".gemini" / "antigravity-cli" / "mcp_config.json", HOME / ".gemini" / "antigravity-cli" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ()),
         ("Antigravity IDE", "", HOME / ".gemini" / "antigravity-ide" / "mcp_config.json", HOME / ".gemini" / "antigravity-ide" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Antigravity IDE.app",)),
@@ -651,6 +857,7 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
             "application_present": application_present(apps),
             "config_present": config_present,
             "skills": count_skills(skill_dir, skills),
+            "managed_skills": count_managed_skills(skill_dir, skills),
             "mcp": count_mcp(mcp_reader(config), shared) if kind != "none" else {"configured": 0, "expected": 0},
             "models": model_names(config, kind) if kind in {"json", "toml"} else [],
             "capabilities": capability_labels(name, config),
@@ -658,6 +865,41 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
         if name == "Copilot / VS Code":
             record["profiles"] = vscode_profiles(shared)
         records.append(record)
+    hermes_home = Path(
+        os.environ.get("HERMES_HOME", HOME / ".hermes")
+    ).expanduser()
+    hermes_config = hermes_home / "config.yaml"
+    if not hermes_config.exists():
+        return records
+    hermes_registered = (
+        hermes_skills_registered(
+            hermes_config.read_text(encoding="utf-8")
+        )
+    )
+    hermes_skills = HOME / ".agents" / "skills"
+    records.append(
+        {
+            "name": "Hermes",
+            "cli_present": bool(shutil.which("hermes")),
+            "application_present": False,
+            "config_present": True,
+            "skills": (
+                count_skills(hermes_skills, skills)
+                if hermes_registered
+                else {"configured": 0, "expected": len(skills)}
+            ),
+            "managed_skills": (
+                count_managed_skills(hermes_skills, skills)
+                if hermes_registered
+                else {"configured": 0, "expected": len(skills)}
+            ),
+            "mcp": {"configured": 0, "expected": 0},
+            "models": [],
+            "capabilities": (
+                ["external Skills"] if hermes_registered else []
+            ),
+        }
+    )
     return records
 
 
@@ -682,6 +924,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
         + configured_mcp_findings()
         + plugin_scope_findings()
         + skill_dependency_findings()
+        + hook_scope_findings()
         + mcp_scope_findings()
     )
     runtime_checked: list[str] = []
@@ -693,6 +936,20 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
             findings.append({"severity": "attention", "message": f"{agent['name']} is supported but has no local configuration."})
         if agent["skills"]["expected"] and agent["skills"]["configured"] != agent["skills"]["expected"]:
             findings.append({"severity": "attention", "message": f"{agent['name']} skill coverage is incomplete."})
+        if (
+            agent["managed_skills"]["expected"]
+            and agent["managed_skills"]["configured"]
+            != agent["managed_skills"]["expected"]
+            and agent["skills"]["configured"] == agent["skills"]["expected"]
+        ):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        f"{agent['name']} skill ownership is not Hub-managed."
+                    ),
+                }
+            )
         if agent["mcp"]["expected"] and agent["mcp"]["configured"] != agent["mcp"]["expected"]:
             findings.append({"severity": "attention", "message": f"{agent['name']} shared MCP coverage is incomplete or command-managed."})
         for profile in agent.get("profiles", []):
@@ -711,14 +968,20 @@ def marker(value: bool) -> str:
 
 
 def render(report: dict[str, Any]) -> str:
-    lines = ["Agent Sync Doctor", "─" * 78]
-    lines.append(f"{'Agent':<22} {'CLI':<5} {'Config':<8} {'Skills':<8} {'MCP':<8} Capabilities")
+    lines = ["Agent Sync Doctor", "─" * 90]
+    lines.append(
+        f"{'Agent':<22} {'CLI':<5} {'Config':<8} {'Skills':<8} "
+        f"{'Managed':<8} {'MCP':<8} Capabilities"
+    )
     for agent in report["agents"]:
         skills = agent["skills"]
+        managed = agent["managed_skills"]
         mcp = agent["mcp"]
         lines.append(
             f"{agent['name']:<22} {marker(agent['cli_present']):<5} {marker(agent['config_present']):<8} "
-            f"{skills['configured']}/{skills['expected']:<6} {mcp['configured']}/{mcp['expected']:<6} "
+            f"{skills['configured']}/{skills['expected']:<6} "
+            f"{managed['configured']}/{managed['expected']:<6} "
+            f"{mcp['configured']}/{mcp['expected']:<6} "
             f"{' · '.join(agent['capabilities']) or '—'}"
         )
         if agent["models"]:

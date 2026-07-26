@@ -24,6 +24,7 @@ def donor_paths() -> list[Path]:
     home = Path.home()
     paths = [
         home / ".cursor" / "mcp.json",
+        home / ".gemini" / "settings.json",
         home / ".gemini" / "config" / "mcp_config.json",
         home / ".claude.json",
         home / ".config" / "opencode" / "opencode.json",

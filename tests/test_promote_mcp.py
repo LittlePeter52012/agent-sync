@@ -664,6 +664,100 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("enabled", servers)
         self.assertNotIn("disabled", servers)
 
+    def test_source_advisor_gemini_recommendation_promotes_settings_json(self):
+        gemini = self.home / ".gemini"
+        gemini.mkdir(parents=True)
+        settings = gemini / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "/bin/echo"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        legacy = gemini / "config" / "mcp_config.json"
+        legacy.parent.mkdir()
+        legacy.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "/bin/sh"},
+                        "legacy-only": {"command": "/bin/sh"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.utime(legacy, (100, 100))
+        os.utime(settings, (200, 200))
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+        }
+
+        advised = subprocess.run(
+            [str(ENTRYPOINT), "sources", "--json"],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        source = json.loads(advised.stdout)["recommended"]
+        result = self.run_promote_source(source, "--yes")
+
+        self.assertEqual(source, "gemini")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shared = json.loads(self.canonical.read_text())["mcpServers"]["shared"]
+        self.assertEqual(shared["command"], "/bin/echo")
+
+    def test_merge_resolves_placeholder_from_gemini_cli_settings(self):
+        self.canonical.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "/bin/sh",
+                            "env": {"TOKEN": "${TOKEN}"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = self.home / ".gemini" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "/bin/sh",
+                            "env": {"TOKEN": "gemini-marker"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        target = self.home / ".cursor" / "mcp.json"
+        env = os.environ | {"HOME": str(self.home)}
+
+        result = subprocess.run(
+            ["python3", str(MERGE), str(self.canonical), str(target)],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shared = json.loads(target.read_text())["mcpServers"]["shared"]
+        self.assertEqual(shared["env"]["TOKEN"], "gemini-marker")
+
     def test_disabled_codex_source_mcp_is_not_promoted(self):
         codex = self.home / ".codex"
         codex.mkdir(parents=True)

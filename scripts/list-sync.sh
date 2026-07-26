@@ -27,11 +27,14 @@ done < <(read_skill_list)
 
 echo ""
 echo "── 各工具覆盖矩阵 ──"
-"$PY" - "$HUB_ROOT" <<'PY'
-import json, re, sys
+"$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
+import json, os, re, sys
 from pathlib import Path
 
 hub = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+from sync_hermes import is_registered as hermes_skills_registered
+
 manifest = (hub / "manifest.yaml").read_text()
 skills = []
 mode = None
@@ -51,6 +54,7 @@ if mcp_path.exists():
     shared = list(json.loads(mcp_path.read_text()).get("mcpServers", {}).keys())
 
 skill_targets = {
+    "Gemini CLI": Path.home()/".agents/skills",
     "Gemini global": Path.home()/".gemini/config/skills",
     "Antigravity App": Path.home()/".gemini/antigravity/skills",
     "Antigravity CLI": Path.home()/".gemini/antigravity-cli/skills",
@@ -62,11 +66,31 @@ skill_targets = {
     "Copilot": Path.home()/".copilot/skills",
     "Agents": Path.home()/".agents/skills",
 }
+hermes_home = Path(
+    os.environ.get("HERMES_HOME", str(Path.home()/".hermes"))
+).expanduser()
+hermes_config = hermes_home/"config.yaml"
+if (
+    hermes_config.exists()
+    and hermes_skills_registered(hermes_config.read_text())
+):
+    skill_targets["Hermes"] = Path.home()/".agents/skills"
 
 def skill_ok(base: Path) -> str:
     if not skills:
         return "0/0"
     ok = sum(1 for s in skills if (base/s/"SKILL.md").exists())
+    return f"{ok}/{len(skills)}"
+
+def skill_managed(base: Path) -> str:
+    if not skills:
+        return "0/0"
+    ok = 0
+    for skill in skills:
+        destination = base / skill
+        source = hub / "skills" / skill
+        if destination.is_symlink() and os.path.realpath(destination) == os.path.realpath(source):
+            ok += 1
     return f"{ok}/{len(skills)}"
 
 def mcp_names_json(path: Path, key: str) -> set[str]:
@@ -80,14 +104,15 @@ def mcp_names_toml(path: Path) -> set[str]:
         return set()
     return {m.group(1).lower() for m in re.finditer(r"^\[mcp_servers\.([^\].]+)\]", path.read_text(), re.M)}
 
-print(f"{'工具':<20} {'Skills':<10} {'共享MCP':<10}")
-print("-" * 44)
+print(f"{'工具':<20} {'Skills':<10} {'Hub受管':<10} {'共享MCP':<10}")
+print("-" * 56)
 for name, base in skill_targets.items():
-    print(f"{name:<20} {skill_ok(base):<10} {'—':<10}")
+    print(f"{name:<20} {skill_ok(base):<10} {skill_managed(base):<10} {'—':<10}")
 
 if shared:
     shared_l = [s.lower() for s in shared]
     mcp_targets = {
+        "Gemini CLI": (Path.home()/".gemini/settings.json", "json", "mcpServers"),
         "Gemini global": (Path.home()/".gemini/config/mcp_config.json", "json", "mcpServers"),
         "Antigravity App": (Path.home()/".gemini/antigravity/mcp_config.json", "json", "mcpServers"),
         "Antigravity CLI": (Path.home()/".gemini/antigravity-cli/mcp_config.json", "json", "mcpServers"),
@@ -101,7 +126,7 @@ if shared:
     for name, (path, kind, key) in mcp_targets.items():
         names = mcp_names_json(path, key) if kind == "json" else mcp_names_toml(path)
         have = sum(1 for s in shared_l if s in names)
-        print(f"{name:<20} {'—':<10} {have}/{len(shared)}")
+        print(f"{name:<20} {'—':<10} {'—':<10} {have}/{len(shared)}")
 PY
 
 echo ""
