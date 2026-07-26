@@ -169,7 +169,7 @@ trap - EXIT HUP INT TERM
 } > "$state/last-remote-deploy"
 rmdir "$stage" 2>/dev/null || true
 
-"$tool/bin/agent-sync" doctor --runtime || true
+/bin/zsh -lic '"$HOME/.local/share/agent-sync/bin/agent-sync" doctor --runtime' || true
 printf "Backup: %s\n" "$backup"
 REMOTE_SCRIPT
 

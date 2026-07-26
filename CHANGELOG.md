@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.2 — 2026-07-26
+
+- Run the post-deployment Doctor through the remote login shell so NVM- and
+  profile-managed CLIs are not falsely reported as missing.
+
 ## 1.9.1 — 2026-07-26
 
 - Add `agent-sync deploy HOST [--apply]` for credential-free, push-based

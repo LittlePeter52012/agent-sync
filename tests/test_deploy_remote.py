@@ -17,13 +17,15 @@ class DeployRemoteTests(unittest.TestCase):
         self.tool = root / "tool"
         self.hub = root / "hub"
         self.log = root / "ssh.log"
+        self.activation_log = root / "activation.sh"
         self.ssh = root / "fake-ssh"
         self.ssh.write_text(
             "#!/bin/sh\n"
             'printf "CALL\\n" >> "$SSH_LOG"\n'
             'case "$*" in\n'
             '  *"tar -xf -"*) printf "ARCHIVE\\n" >> "$SSH_LOG" ;;\n'
-            '  *"bash -s"*) printf "ACTIVATE\\n" >> "$SSH_LOG" ;;\n'
+            '  *"bash -s"*) printf "ACTIVATE\\n" >> "$SSH_LOG"; '
+            'cat > "$SSH_ACTIVATION_LOG"; exit 0 ;;\n'
             "esac\n"
             "cat >/dev/null\n"
             'printf "remote preflight ok\\n"\n',
@@ -57,6 +59,7 @@ class DeployRemoteTests(unittest.TestCase):
             "AGENT_HUB_ROOT": str(self.hub),
             "AGENT_SYNC_SSH_BIN": str(self.ssh),
             "SSH_LOG": str(self.log),
+            "SSH_ACTIVATION_LOG": str(self.activation_log),
         }
 
     def tearDown(self):
@@ -88,6 +91,10 @@ class DeployRemoteTests(unittest.TestCase):
         self.assertEqual(calls.count("CALL"), 3)
         self.assertEqual(calls.count("ARCHIVE"), 2)
         self.assertEqual(calls.count("ACTIVATE"), 1)
+        self.assertIn(
+            "/bin/zsh -lic",
+            self.activation_log.read_text(encoding="utf-8"),
+        )
 
     def test_apply_refuses_dirty_source_before_ssh_mutation(self):
         (self.hub / "manifest.yaml").write_text("dirty\n", encoding="utf-8")
