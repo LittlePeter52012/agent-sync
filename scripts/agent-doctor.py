@@ -287,6 +287,135 @@ def plugin_scope_findings() -> list[dict[str, str]]:
     return findings
 
 
+def codex_orchestration_findings() -> list[dict[str, str]]:
+    policy_path = HUB / "policies" / "tool-scopes.json"
+    config_path = HOME / ".codex" / "config.toml"
+    if not policy_path.exists() or not config_path.exists():
+        return []
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    orchestration = (
+        policy.get("orchestration", {}).get("codex", {})
+        if isinstance(policy, dict)
+        else {}
+    )
+    if not isinstance(orchestration, dict):
+        return []
+    try:
+        config_text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return []
+
+    findings: list[dict[str, str]] = []
+    expected_agents = orchestration.get("agents", {})
+    configured_agents: dict[str, Any] = {}
+    agents_match = re.search(
+        r"(?ms)^\[agents\]\s*\n(?P<body>.*?)(?=^\[|\Z)",
+        config_text,
+    )
+    if agents_match:
+        for line in agents_match.group("body").splitlines():
+            match = re.match(
+                r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$",
+                line,
+            )
+            if not match:
+                continue
+            key, raw = match.groups()
+            if raw in {"true", "false"}:
+                configured_agents[key] = raw == "true"
+            elif re.fullmatch(r"-?\d+", raw):
+                configured_agents[key] = int(raw)
+            elif raw.startswith('"') and raw.endswith('"'):
+                try:
+                    configured_agents[key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+    if isinstance(expected_agents, dict):
+        for key, expected in expected_agents.items():
+            configured = configured_agents.get(key, "<unset>")
+            if configured != expected:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            "Codex agent setting differs from Hub policy: "
+                            f"{key} (configured {configured}, expected {expected})."
+                        ),
+                    }
+                )
+
+    remove_agent_keys = orchestration.get("remove_agent_keys", [])
+    if isinstance(remove_agent_keys, list):
+        for key in remove_agent_keys:
+            if isinstance(key, str) and key in configured_agents:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            "Forbidden Codex agent legacy setting is present: "
+                            f"{key}."
+                        ),
+                    }
+                )
+
+    table_names = set(re.findall(r"(?m)^\[([^\]]+)\]\s*$", config_text))
+    forbidden_tables = orchestration.get("forbidden_tables", [])
+    if isinstance(forbidden_tables, list):
+        for name in forbidden_tables:
+            if isinstance(name, str) and name in table_names:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            "Forbidden Codex orchestration table is present: "
+                            f"{name}."
+                        ),
+                    }
+                )
+
+    forbidden_marketplaces = orchestration.get("forbidden_marketplaces", [])
+    if isinstance(forbidden_marketplaces, list):
+        for name in forbidden_marketplaces:
+            table = f"marketplaces.{name}"
+            if isinstance(name, str) and table in table_names:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            "Forbidden Codex marketplace is configured: "
+                            f"{name}."
+                        ),
+                    }
+                )
+
+    prefixes = orchestration.get("forbidden_hook_prefixes", [])
+    hook_names = re.findall(
+        r'(?m)^\[hooks\.state\."([^"]+)"\]\s*$',
+        config_text,
+    )
+    if isinstance(prefixes, list):
+        for prefix in prefixes:
+            if not isinstance(prefix, str) or not prefix:
+                continue
+            if any(
+                isinstance(name, str) and name.startswith(prefix)
+                for name in hook_names
+            ):
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            "Forbidden Codex hook state is still trusted: "
+                            f"{prefix}"
+                        ),
+                    }
+                )
+    return findings
+
+
 def skill_dependency_findings() -> list[dict[str, str]]:
     path = HUB / "policies" / "tool-scopes.json"
     if not path.exists():
@@ -937,6 +1066,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
         + mcp_usability_findings()
         + configured_mcp_findings()
         + plugin_scope_findings()
+        + codex_orchestration_findings()
         + skill_dependency_findings()
         + hook_scope_findings()
         + mcp_scope_findings()

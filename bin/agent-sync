@@ -312,6 +312,10 @@ case "$cmd" in
             echo "  would register shared Skills with Hermes when configured"
             echo "  would sync missing shared MCP entries without replacing local overrides"
             echo "  would deduplicate synced rules and inject one managed copy"
+            python3 "$SCRIPTS/reconcile-codex-orchestration.py" --dry-run || {
+                rc=$?
+                [ "$rc" -eq 2 ] || exit "$rc"
+            }
             echo "  would run agent-sync doctor"
             exit 0
         fi
@@ -320,6 +324,7 @@ case "$cmd" in
         python3 "$SCRIPTS/sync_hermes.py"
         bash "$SCRIPTS/sync-mcp.sh"
         bash "$SCRIPTS/sync-rules.sh"
+        python3 "$SCRIPTS/reconcile-codex-orchestration.py"
         exec python3 "$SCRIPTS/agent-doctor.py"
         ;;
     ""|-h|--help|help)

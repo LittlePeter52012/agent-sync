@@ -664,6 +664,82 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("required-plugin", messages)
         self.assertIn("forbidden-plugin@market", messages)
 
+    def test_doctor_audits_codex_orchestration_and_stale_hook_state(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "codex": {"forbidden": ["omo@sisyphuslabs"]},
+                    },
+                    "orchestration": {
+                        "codex": {
+                            "agents": {
+                                "enabled": True,
+                                "max_concurrent_threads_per_session": 3,
+                                "default_subagent_model": "gpt-5.6-terra",
+                                "default_subagent_reasoning_effort": "low",
+                            },
+                            "forbidden_hook_prefixes": [
+                                "omo@sisyphuslabs:",
+                            ],
+                            "remove_agent_keys": ["max_threads"],
+                            "forbidden_tables": ["features.multi_agent_v2"],
+                            "forbidden_marketplaces": ["sisyphuslabs"],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.home / ".codex" / "config.toml").write_text(
+            'secret = "TOKEN_SHOULD_NOT_APPEAR"\n'
+            "[agents]\n"
+            "enabled = true\n"
+            "max_concurrent_threads_per_session = 12\n"
+            'default_subagent_model = "gpt-5.6-sol"\n'
+            'default_subagent_reasoning_effort = "xhigh"\n'
+            "max_threads = 1000\n"
+            "[features.multi_agent_v2]\n"
+            "enabled = false\n"
+            "max_concurrent_threads_per_session = 1000\n"
+            "[marketplaces.sisyphuslabs]\n"
+            'source_type = "local"\n'
+            '[hooks.state."omo@sisyphuslabs:hooks/ultrawork.json:user_prompt_submit:0:0"]\n'
+            'trusted_hash = "sha256:stale"\n',
+            encoding="utf-8",
+        )
+
+        result = self.run_doctor()
+        messages = "\n".join(
+            item["message"] for item in json.loads(result.stdout)["findings"]
+        )
+
+        self.assertIn(
+            "Codex agent setting differs from Hub policy: "
+            "max_concurrent_threads_per_session (configured 12, expected 3).",
+            messages,
+        )
+        self.assertIn(
+            "Forbidden Codex hook state is still trusted: omo@sisyphuslabs:",
+            messages,
+        )
+        self.assertIn(
+            "Forbidden Codex agent legacy setting is present: max_threads.",
+            messages,
+        )
+        self.assertIn(
+            "Forbidden Codex orchestration table is present: "
+            "features.multi_agent_v2.",
+            messages,
+        )
+        self.assertIn(
+            "Forbidden Codex marketplace is configured: sisyphuslabs.",
+            messages,
+        )
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
     def test_doctor_audits_tool_only_mcp_scope(self):
         policy = self.hub / "policies"
         policy.mkdir()
