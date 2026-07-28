@@ -90,10 +90,13 @@ check_links "Agents" "$HOME/.agents/skills"
 echo ""
 echo "[4] MCP (if hub defines shared servers)"
 if [ -f "$HUB_ROOT/mcp/shared-servers.json" ]; then
-  if "$PY" - "$HUB_ROOT" <<'PY'
+  if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
 import json, re, sys
 from pathlib import Path
 hub = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+from cursor_plugin_mcp import plugin_server_names
+
 shared = [k.lower() for k in json.loads((hub/"mcp/shared-servers.json").read_text()).get("mcpServers", {})]
 home = Path.home()
 checks = [
@@ -114,6 +117,8 @@ for name, path, kind, key in checks:
         names = {k.lower() for k in json.loads(path.read_text()).get(key, {})}
     else:
         names = {m.group(1).lower() for m in re.finditer(r"^\[mcp_servers\.([^\].]+)\]", path.read_text(), re.M)}
+    if name == "Cursor":
+        names |= plugin_server_names(home)
     have = sum(1 for s in shared if s in names)
     status = "PASS" if have == len(shared) else "FAIL"
     if status == "FAIL":

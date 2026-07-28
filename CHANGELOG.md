@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.10.1 — 2026-07-28
+
+- Make the full evaluation suite count enabled local Cursor plugin MCP servers
+  with the same ownership-aware coverage logic used by `verify` and `doctor`.
+
 ## 1.10.0 — 2026-07-28
 
 - Treat enabled local Cursor plugin MCP servers as product-owned providers for
