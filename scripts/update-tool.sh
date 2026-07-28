@@ -79,6 +79,11 @@ update_one_repo() {
         return 0
     fi
 
+    if git -C "$dir" merge-base --is-ancestor "$remote_ref" "$local_ref"; then
+        echo "  up to date ($(git -C "$dir" log -1 --format='%h %s' HEAD); local commits ahead)"
+        return 0
+    fi
+
     echo "  update available: $(git -C "$dir" log -1 --format='%h %s' HEAD) → $(git -C "$dir" log -1 --format='%h %s' "$remote_ref")"
 
     if $CHECK_ONLY; then

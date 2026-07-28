@@ -339,6 +339,20 @@ class AgentDoctorTests(unittest.TestCase):
         target = self.home / ".codex" / "AGENTS.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("unchanged\n")
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "orchestration": {
+                        "codex": {
+                            "agents": {"enabled": True},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         before = target.read_text()
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
         result = subprocess.run(

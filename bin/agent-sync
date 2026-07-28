@@ -239,7 +239,11 @@ case "$cmd" in
                 *) echo "Unknown: $1"; usage 1 ;;
             esac
         done
-        bash "$SCRIPTS/update-tool.sh" "${UPD_ARGS[@]}"
+        if [ "${#UPD_ARGS[@]}" -eq 0 ]; then
+            bash "$SCRIPTS/update-tool.sh"
+        else
+            bash "$SCRIPTS/update-tool.sh" "${UPD_ARGS[@]}"
+        fi
         ;;
     pull)
         require_hub
