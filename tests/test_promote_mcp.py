@@ -63,6 +63,16 @@ class PromoteMcpTests(unittest.TestCase):
         path.write_text(json.dumps({"servers": servers}, indent=2) + "\n", encoding="utf-8")
         return path
 
+    def write_cursor_plugin(self, servers: dict) -> Path:
+        plugin = self.home / ".cursor" / "plugins" / "local" / "memory"
+        plugin.mkdir(parents=True)
+        path = plugin / "mcp.json"
+        path.write_text(
+            json.dumps({"mcpServers": servers}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return path
+
     def run_promote(self, *args: str) -> subprocess.CompletedProcess[str]:
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
         return subprocess.run(
@@ -785,6 +795,71 @@ class PromoteMcpTests(unittest.TestCase):
         cursor = json.loads((self.home / ".cursor" / "mcp.json").read_text())["mcpServers"]
         self.assertIn("shared", cursor)
         self.assertIn("retire-me", cursor)
+
+    def test_sync_uses_cursor_plugin_for_shared_mcp(self):
+        self.write_cursor_plugin({"shared": {"command": "plugin-command"}})
+        cursor_path = self.home / ".cursor" / "mcp.json"
+        cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        cursor_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "cursor-native": {"command": "native-command"}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_agent_sync("mcp")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        servers = json.loads(cursor_path.read_text())["mcpServers"]
+        self.assertNotIn("shared", servers)
+        self.assertIn("retire-me", servers)
+        self.assertEqual(
+            servers["cursor-native"],
+            {"command": "native-command"},
+        )
+
+    def test_sync_restores_shared_mcp_when_cursor_plugin_is_absent(self):
+        result = self.run_agent_sync("mcp")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        servers = json.loads(
+            (self.home / ".cursor" / "mcp.json").read_text()
+        )["mcpServers"]
+        self.assertIn("shared", servers)
+        self.assertIn("retire-me", servers)
+
+    def test_verify_counts_cursor_plugin_shared_mcp(self):
+        result = self.run_agent_sync("mcp")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        cursor_path = self.home / ".cursor" / "mcp.json"
+        cursor = json.loads(cursor_path.read_text())
+        cursor["mcpServers"].pop("shared")
+        cursor["mcpServers"].pop("retire-me")
+        cursor_path.write_text(json.dumps(cursor), encoding="utf-8")
+        self.write_cursor_plugin(
+            {
+                "shared": {"command": "plugin-command"},
+                "retire-me": {"command": "plugin-retired-command"},
+            }
+        )
+
+        verify = subprocess.run(
+            ["bash", str(VERIFY)],
+            env=os.environ
+            | {
+                "HOME": str(self.home),
+                "AGENT_HUB_ROOT": str(self.hub),
+            },
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("Cursor shared MCP 2/2", verify.stdout)
 
     def test_verify_fails_when_target_file_exists_but_shared_name_is_missing(self):
         json_targets = [

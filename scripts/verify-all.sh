@@ -58,11 +58,14 @@ fi
 echo ""
 echo "[mcp]"
 if [ -f "$HUB_ROOT/mcp/shared-servers.json" ]; then
-    if "$PY" - "$HUB_ROOT" <<'PY'
+    if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
 import json, re, sys
 from pathlib import Path
 
 hub = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+from cursor_plugin_mcp import plugin_server_names
+
 home = Path.home()
 shared = {
     name.lower()
@@ -106,6 +109,8 @@ if profiles.exists():
 failures = 0
 for label, path, kind, key in targets:
     names = codex_names(path) if kind == "toml" else json_names(path, key)
+    if label == "Cursor":
+        names |= plugin_server_names(home)
     count = len(names & shared)
     marker = "✅" if count == len(shared) else "❌"
     print(f"  {marker} {label} shared MCP {count}/{len(shared)}")

@@ -139,6 +139,15 @@ server names, preventing duplicate tool exposure such as `MinerU` plus
 directories. Shared rules still use the single global
 `~/.gemini/GEMINI.md`; root-specific rule copies are intentionally not created.
 
+### Cursor plugin-owned shared MCP
+
+Cursor local plugins remain product-owned. When a local plugin declares an
+enabled MCP server whose name also appears in the Hub shared set, Agent Sync
+counts the plugin as satisfying Cursor coverage and removes only the duplicate
+user-level entry from `~/.cursor/mcp.json`. The plugin files and unrelated
+Cursor MCP servers are never modified. If the plugin is removed, the next sync
+restores the Hub definition automatically.
+
 ## Two-layer model
 
 | Layer | What | Where | Visibility |
@@ -191,7 +200,7 @@ agent-sync verify --strict # structural verification + runtime doctor
 agent-sync test
 agent-sync status
 agent-sync doctor        # local agent capabilities and sync-health report
-agent-sync doctor --runtime # add bounded OpenCode/Claude MCP probes
+agent-sync doctor --runtime # add bounded Cursor/OpenCode/Claude MCP probes
 agent-sync doctor --json # same report as safe, machine-readable JSON
 agent-sync fix --dry-run # preview safe local repairs without writing
 agent-sync fix           # sync missing coverage and normalize synced rules
@@ -208,12 +217,16 @@ model/provider names, Skill coverage and canonical Hub ownership, shared-MCP
 coverage, tool-only MCP executable health, optional CLI-backed Skill
 dependencies, required lifecycle-hook wiring, retired MCP residue, plugin/MCP
 scope drift, and duplicate synced rules.
-`doctor --runtime` adds bounded OpenCode and Claude CLI probes. Raw command
-output is discarded after status parsing. A failed probe is rechecked once
-before it becomes a finding, while persistent failures remain visible. Reports
-never print MCP values, tokens, private configuration paths, cookies, or
-account/subscription information. The default bounds are 30 seconds for
-OpenCode and 90 seconds for Claude. Override them with
+`doctor --runtime` adds bounded OpenCode and Claude CLI probes plus a two-second
+compatibility check for Cursor loopback HTTP MCP endpoints. The Cursor check
+sends an unauthenticated `GET` only to `127.0.0.1`, `localhost`, or `::1`, never
+uses configured headers, and reports a `404` because Cursor cannot open its
+optional SSE stream in that state. Raw command output is discarded after status
+parsing. A failed CLI probe is rechecked once before it becomes a finding, while
+persistent failures remain visible. Reports never print MCP values, tokens,
+private configuration paths, cookies, or account/subscription information. The
+default bounds are 30 seconds for OpenCode and 90 seconds for Claude. Override
+them with
 `AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE` and
 `AGENT_SYNC_RUNTIME_TIMEOUT_CLAUDE`, or set
 `AGENT_SYNC_RUNTIME_TIMEOUT` for both.

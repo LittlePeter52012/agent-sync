@@ -1,10 +1,13 @@
+import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -62,6 +65,111 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertEqual(codex["mcp"], {"configured": 1, "expected": 1})
         self.assertIn("safe-model", codex["models"])
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_counts_cursor_plugin_shared_mcp(self):
+        cursor = self.home / ".cursor"
+        cursor.mkdir()
+        (cursor / "mcp.json").write_text(
+            json.dumps({"mcpServers": {}}),
+            encoding="utf-8",
+        )
+        plugin = cursor / "plugins" / "local" / "memory"
+        plugin.mkdir(parents=True)
+        (plugin / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {"command": "plugin-command"}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        cursor_record = next(
+            agent for agent in report["agents"]
+            if agent["name"] == "Cursor"
+        )
+        messages = "\n".join(
+            item["message"] for item in report["findings"]
+        )
+
+        self.assertEqual(
+            cursor_record["mcp"],
+            {"configured": 1, "expected": 1},
+        )
+        self.assertNotIn(
+            "Cursor shared MCP coverage is incomplete",
+            messages,
+        )
+
+    def run_cursor_http_doctor(self, status: int):
+        cursor = self.home / ".cursor"
+        cursor.mkdir(exist_ok=True)
+        config = cursor / "mcp.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "broken-local": {
+                            "type": "http",
+                            "url": "http://127.0.0.1:8765/mcp",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        sys.path.insert(0, str(REPO / "scripts"))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "agent_doctor_test_module",
+                DOCTOR,
+            )
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+
+        def opener(request, timeout):
+            raise HTTPError(
+                request.full_url,
+                status,
+                "test status",
+                {},
+                None,
+            )
+
+        return module.cursor_loopback_http_findings(
+            config,
+            opener=opener,
+        )
+
+    def test_doctor_runtime_reports_cursor_streamable_http_404(self):
+        findings, checked = self.run_cursor_http_doctor(404)
+        messages = "\n".join(
+            item["message"] for item in findings
+        )
+
+        self.assertTrue(checked)
+        self.assertIn(
+            "Cursor HTTP MCP is not Streamable HTTP compatible: broken-local",
+            messages,
+        )
+
+    def test_doctor_runtime_accepts_cursor_streamable_http_405(self):
+        findings, checked = self.run_cursor_http_doctor(405)
+        messages = "\n".join(
+            item["message"] for item in findings
+        )
+
+        self.assertTrue(checked)
+        self.assertNotIn(
+            "Cursor HTTP MCP is not Streamable HTTP compatible: broken-local",
+            messages,
+        )
 
     def test_doctor_reports_skill_copy_that_is_not_hub_managed(self):
         report = json.loads(self.run_doctor().stdout)

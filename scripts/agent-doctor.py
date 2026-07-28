@@ -12,8 +12,12 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from config_inventory import collect_inventory
+from cursor_plugin_mcp import plugin_server_names
 from sync_hermes import is_registered as hermes_skills_registered
 
 
@@ -801,14 +805,80 @@ def failed_runtime_names(tool: str, output: str) -> list[str]:
     return sorted(names)
 
 
+def cursor_loopback_http_findings(
+    config_path: Path = HOME / ".cursor" / "mcp.json",
+    *,
+    opener: Any = urlopen,
+    timeout: float = 2.0,
+) -> tuple[list[dict[str, str]], bool]:
+    """Probe Cursor loopback HTTP MCP GET behavior without credentials."""
+    if not config_path.exists():
+        return [], False
+    try:
+        servers = json.loads(
+            config_path.read_text(encoding="utf-8")
+        ).get("mcpServers", {})
+    except (OSError, json.JSONDecodeError):
+        return [], False
+    if not isinstance(servers, dict):
+        return [], False
+
+    findings: list[dict[str, str]] = []
+    checked = False
+    for name, config in servers.items():
+        if not isinstance(name, str) or not isinstance(config, dict):
+            continue
+        url = config.get("url")
+        if not isinstance(url, str):
+            continue
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        ):
+            continue
+        checked = True
+        request = Request(
+            url,
+            headers={"Accept": "text/event-stream"},
+            method="GET",
+        )
+        try:
+            response = opener(request, timeout=timeout)
+            response.close()
+        except HTTPError as exc:
+            if exc.code == 404:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            "Cursor HTTP MCP is not Streamable HTTP "
+                            f"compatible: {name}"
+                        ),
+                    }
+                )
+        except (URLError, TimeoutError, OSError):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        f"Cursor HTTP MCP connection failed: {name}"
+                    ),
+                }
+            )
+    return findings, checked
+
+
 def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
     """Run bounded, read-only CLI probes and keep only sanitized outcomes."""
     probes = [
         ("OpenCode", "opencode", ["mcp", "list"], 30),
         ("Claude", "claude", ["mcp", "list"], 90),
     ]
-    findings: list[dict[str, str]] = []
+    findings, cursor_checked = cursor_loopback_http_findings()
     checked: list[str] = []
+    if cursor_checked:
+        checked.append("Cursor")
     common_timeout = os.environ.get("AGENT_SYNC_RUNTIME_TIMEOUT")
     for label, executable, arguments, default_timeout in probes:
         command = shutil.which(executable)
@@ -994,6 +1064,9 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
     records: list[dict[str, Any]] = []
     for name, command, config, skill_dir, kind, mcp_reader, apps in targets:
         config_present = config.exists()
+        mcp_names = mcp_reader(config)
+        if name == "Cursor":
+            mcp_names |= plugin_server_names(HOME)
         record = {
             "name": name,
             "cli_present": bool(command and shutil.which(command)),
@@ -1001,7 +1074,7 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
             "config_present": config_present,
             "skills": count_skills(skill_dir, skills),
             "managed_skills": count_managed_skills(skill_dir, skills),
-            "mcp": count_mcp(mcp_reader(config), shared) if kind != "none" else {"configured": 0, "expected": 0},
+            "mcp": count_mcp(mcp_names, shared) if kind != "none" else {"configured": 0, "expected": 0},
             "models": model_names(config, kind) if kind in {"json", "toml"} else [],
             "capabilities": capability_labels(name, config),
         }

@@ -12,6 +12,7 @@ MERGE_CODEX="$SYNC_HOME/scripts/merge-mcp-codex.py"
 MERGE_CLAUDE="$SYNC_HOME/scripts/sync-mcp-claude.py"
 PRUNE_PY="$SYNC_HOME/scripts/prune-retired-mcp.py"
 PRUNE_ALIASES_PY="$SYNC_HOME/scripts/prune-mcp-aliases.py"
+CURSOR_PLUGIN_MCP="$SYNC_HOME/scripts/cursor_plugin_mcp.py"
 RETIRED="$HUB_ROOT/mcp/retired-servers.json"
 
 prepare_antigravity_cache() {
@@ -68,6 +69,13 @@ for entry in "${TARGETS[@]}"; do
     python3 "$PRUNE_PY" "$RETIRED" "$target"
     python3 "$MERGE_PY" "$CANONICAL" "$target"
     case "$label" in
+        "Cursor")
+            python3 "$CURSOR_PLUGIN_MCP" \
+                --home "$HOME" \
+                prune \
+                --canonical "$CANONICAL" \
+                --target "$target"
+            ;;
         "Antigravity App"|"Antigravity CLI"|"Antigravity IDE")
             prepare_antigravity_cache "$target"
             ;;

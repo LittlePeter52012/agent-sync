@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.0 — 2026-07-28
+
+- Treat enabled local Cursor plugin MCP servers as product-owned providers for
+  shared capability coverage, removing only duplicate user-level registrations
+  and restoring the Hub entry automatically when the plugin disappears.
+- Extend `doctor --runtime` with a bounded, unauthenticated, loopback-only
+  Cursor HTTP compatibility check that reports the `GET /mcp` 404 failure mode
+  without exposing configured URLs, headers, or response bodies.
+
 ## 1.9.3 — 2026-07-26
 
 - Recheck a failed OpenCode or Claude runtime MCP probe once before reporting

@@ -33,6 +33,7 @@ from pathlib import Path
 
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
+from cursor_plugin_mcp import plugin_server_names
 from sync_hermes import is_registered as hermes_skills_registered
 
 manifest = (hub / "manifest.yaml").read_text()
@@ -125,6 +126,8 @@ if shared:
     }
     for name, (path, kind, key) in mcp_targets.items():
         names = mcp_names_json(path, key) if kind == "json" else mcp_names_toml(path)
+        if name == "Cursor":
+            names |= plugin_server_names(Path.home())
         have = sum(1 for s in shared_l if s in names)
         print(f"{name:<20} {'—':<10} {'—':<10} {have}/{len(shared)}")
 PY
