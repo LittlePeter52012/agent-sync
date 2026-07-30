@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
+PY="${PYTHON:-python3}"
 
 SOURCE_DIR="$HUB_ROOT/skills"
 BACKUP_ROOT="$HUB_ROOT/.sync-backups"
@@ -28,6 +29,23 @@ log() { echo "[skills] $1"; }
 warn() { echo "[WARN] $1" >&2; }
 
 skill_present() { [ -L "$1" ] || [ -d "$1" ]; }
+
+is_suppressed() {
+    local skill_name="$1" suppressed_file="$2"
+    grep -Fqx "$skill_name" "$suppressed_file"
+}
+
+remove_suppressed_hub_link() {
+    local skill_name="$1" target_dir="$2"
+    local source="$SOURCE_DIR/$skill_name"
+    local dest="$target_dir/$skill_name"
+    if skill_is_hub_managed "$dest" "$source"; then
+        [ "$DRY_RUN" = false ] && rm "$dest"
+        log "  ⊘ $skill_name @ ${target_dir##*/} (product plugin/policy owns it)"
+    else
+        log "  ⊘ $skill_name @ ${target_dir##*/} (product plugin/policy owns it)"
+    fi
+}
 
 backup_existing_dest() {
     local dest="$1" skill_name="$2" target_dir="$3"
@@ -110,19 +128,29 @@ echo "  Hub: $SOURCE_DIR"
 [ "$DRY_RUN" = true ] && echo "  [DRY RUN]"
 echo ""
 
-while IFS= read -r target_dir; do
+while IFS='|' read -r target_key target_label target_dir; do
     [ -n "$target_dir" ] || continue
     log "→ $target_dir"
     mkdir -p "$target_dir"
+    suppressed_file=$(mktemp)
+    trap 'rm -f "$suppressed_file"' EXIT
+    "$PY" "$SCRIPT_DIR/capability_resolver.py" \
+        --home "$HOME" \
+        --hub "$HUB_ROOT" \
+        suppressed-skills "$target_key" > "$suppressed_file"
     for skill in "${SKILLS[@]}"; do
-        if [ "$METHOD" = "rsync" ]; then
+        if is_suppressed "$skill" "$suppressed_file"; then
+            remove_suppressed_hub_link "$skill" "$target_dir"
+        elif [ "$METHOD" = "rsync" ]; then
             rsync_skill "$skill" "$target_dir"
         else
             link_skill "$skill" "$target_dir"
         fi
     done
+    rm -f "$suppressed_file"
+    trap - EXIT
     echo ""
-done < <(skill_targets)
+done < <(skill_target_specs)
 
 log "Verification:"
 for skill in "${SKILLS[@]}"; do

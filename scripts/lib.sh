@@ -29,16 +29,20 @@ PY
 }
 
 skill_targets() {
+    skill_target_specs | cut -d '|' -f 3-
+}
+
+skill_target_specs() {
     cat <<EOF
-$HOME/.gemini/config/skills
-$HOME/.gemini/antigravity/skills
-$HOME/.gemini/antigravity-cli/skills
-$HOME/.gemini/antigravity-ide/skills
-$HOME/.claude/skills
-$HOME/.cursor/skills
-$HOME/.codex/skills
-$HOME/.config/opencode/skills
-$HOME/.copilot/skills
-$HOME/.agents/skills
+gemini-global|Gemini global|$HOME/.gemini/config/skills
+antigravity-app|Antigravity App|$HOME/.gemini/antigravity/skills
+antigravity-cli|Antigravity CLI|$HOME/.gemini/antigravity-cli/skills
+antigravity-ide|Antigravity IDE|$HOME/.gemini/antigravity-ide/skills
+claude|Claude|$HOME/.claude/skills
+cursor|Cursor|$HOME/.cursor/skills
+codex|Codex|$HOME/.codex/skills
+opencode|OpenCode|$HOME/.config/opencode/skills
+copilot|Copilot|$HOME/.copilot/skills
+agents|Agents|$HOME/.agents/skills
 EOF
 }

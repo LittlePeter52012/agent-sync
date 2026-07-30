@@ -76,6 +76,59 @@ class AntigravitySurfaceTests(unittest.TestCase):
                 (self.hub / "skills" / "shared-skill").resolve(),
             )
 
+    def test_cursor_plugin_owns_duplicate_skill_and_hub_link_is_restored(self):
+        subprocess.run(
+            ["bash", str(SYNC_SKILLS)],
+            env=self.env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cursor_link = self.home / ".cursor" / "skills" / "shared-skill"
+        self.assertTrue(cursor_link.is_symlink())
+
+        plugin = (
+            self.home
+            / ".cursor/plugins/cache/cursor-public/example/abc"
+            / "skills/shared-skill"
+        )
+        plugin.mkdir(parents=True)
+        (plugin / "SKILL.md").write_text("# plugin copy\n", encoding="utf-8")
+        log = (
+            self.home
+            / "Library/Application Support/Cursor/logs/latest"
+            / "Cursor Plugins.log"
+        )
+        log.parent.mkdir(parents=True)
+        log.write_text(
+            "BackendMarketplaceClient: Adding enabled plugin: "
+            "example from abc at undefined\n",
+            encoding="utf-8",
+        )
+
+        subprocess.run(
+            ["bash", str(SYNC_SKILLS)],
+            env=self.env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertFalse(cursor_link.exists())
+        self.assertTrue(
+            (self.home / ".codex/skills/shared-skill").is_symlink()
+        )
+
+        log.unlink()
+        subprocess.run(
+            ["bash", str(SYNC_SKILLS)],
+            env=self.env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertTrue(cursor_link.is_symlink())
+
     def test_mcp_sync_preserves_local_servers_and_prepares_caches(self):
         gemini_settings = self.home / ".gemini" / "settings.json"
         gemini_settings.parent.mkdir(parents=True)
