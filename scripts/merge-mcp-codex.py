@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -179,17 +180,30 @@ def atomic_write(path: Path, text: str) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <canonical.json> <config.toml>", file=sys.stderr)
-        return 1
-    canonical = json.loads(Path(sys.argv[1]).expanduser().read_text(encoding="utf-8"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("canonical", type=Path)
+    parser.add_argument("target", type=Path)
+    parser.add_argument("--exclude-file", type=Path)
+    args = parser.parse_args()
+    canonical = json.loads(args.canonical.expanduser().read_text(encoding="utf-8"))
     templates = canonical.get("mcpServers", {})
-    target = Path(sys.argv[2]).expanduser()
+    excluded: set[str] = set()
+    if args.exclude_file and args.exclude_file.exists():
+        excluded = {
+            line.strip().casefold()
+            for line in args.exclude_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+    target = args.target.expanduser()
     text = target.read_text(encoding="utf-8") if target.exists() else ""
     existing = parse_servers(text)
     names = {name.lower() for name in templates}
     base = remove_server_blocks(text, names) if text else ""
-    blocks = [render_server(name, cfg, existing.get(name.lower(), {})) for name, cfg in templates.items()]
+    blocks = [
+        render_server(name, cfg, existing.get(name.lower(), {}))
+        for name, cfg in templates.items()
+        if name.casefold() not in excluded
+    ]
     output = base.rstrip()
     if blocks:
         output += ("\n\n" if output else "") + MARKER + "\n" + "\n".join(blocks)

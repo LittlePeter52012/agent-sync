@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,26 @@ def collect_donors() -> dict[str, dict[str, Any]]:
                     prev = {**prev, "env": prev_env}
                     out[key] = prev
     return out
+
+
+def secret_donors_allowed(
+    hub: Path | None,
+    target_key: str | None,
+) -> bool:
+    """Keep legacy behavior unless an explicit target policy denies donors."""
+    if hub is None or target_key is None:
+        return True
+    policy = load_json(hub / "policies" / "tool-scopes.json")
+    secrets = policy.get("secrets", {})
+    targets = secrets.get("targets", {}) if isinstance(secrets, dict) else {}
+    target = (
+        targets.get(target_key, targets.get(target_key.split(":", 1)[0], {}))
+        if isinstance(targets, dict)
+        else {}
+    )
+    if not isinstance(target, dict) or "allow_secret_donors" not in target:
+        return True
+    return target.get("allow_secret_donors") is True
 
 
 def donor_lookup_map(donor_cfg: dict[str, Any]) -> dict[str, str]:
@@ -288,10 +309,41 @@ def detect_format(path: Path, doc: dict[str, Any]) -> str:
     return "cursor"
 
 
-def merge_into(target_path: Path, canonical_path: Path) -> dict[str, int]:
+def has_concrete_sensitive_values(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for key, child in value.items():
+        if key in {"env", "environment", "headers", "http_headers"}:
+            if isinstance(child, dict) and any(
+                isinstance(item, str)
+                and item
+                and not is_placeholder(item)
+                for item in child.values()
+            ):
+                return True
+        if isinstance(child, (dict, list)):
+            if isinstance(child, dict) and has_concrete_sensitive_values(child):
+                return True
+            if isinstance(child, list) and any(
+                has_concrete_sensitive_values(item)
+                for item in child
+                if isinstance(item, dict)
+            ):
+                return True
+    return False
+
+
+def merge_into(
+    target_path: Path,
+    canonical_path: Path,
+    excluded: set[str] | None = None,
+    *,
+    allow_secret_donors: bool = True,
+) -> dict[str, int]:
     canonical = load_json(canonical_path)
     templates = canonical.get("mcpServers", {})
-    donors = collect_donors()
+    donors = collect_donors() if allow_secret_donors else {}
+    excluded_names = {name.casefold() for name in (excluded or set())}
 
     target_path = target_path.expanduser()
     doc = load_json(target_path) if target_path.exists() else {}
@@ -316,8 +368,15 @@ def merge_into(target_path: Path, canonical_path: Path) -> dict[str, int]:
     servers = doc.setdefault(bucket_key, {})
     lower_map = {k.lower(): k for k in servers}
 
-    stats = {"added": 0, "updated": 0, "unchanged": 0}
+    stats = {"added": 0, "updated": 0, "unchanged": 0, "removed": 0}
     for name, template in templates.items():
+        if name.casefold() in excluded_names:
+            existing_key = lower_map.get(name.casefold())
+            if existing_key is not None:
+                servers.pop(existing_key, None)
+                lower_map.pop(name.casefold(), None)
+                stats["removed"] += 1
+            continue
         existing_key = lower_map.get(name.lower(), name)
         existing = servers.get(existing_key)
         before = json.dumps(existing, sort_keys=True) if existing is not None else None
@@ -352,15 +411,37 @@ def merge_into(target_path: Path, canonical_path: Path) -> dict[str, int]:
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if has_concrete_sensitive_values(doc):
+        target_path.chmod(0o600)
     return stats
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <canonical.json> <target.json>", file=sys.stderr)
-        return 1
-    stats = merge_into(Path(sys.argv[2]), Path(sys.argv[1]))
-    print(f"  {Path(sys.argv[2]).name}: +{stats['added']} updated={stats['updated']} unchanged={stats['unchanged']}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("canonical", type=Path)
+    parser.add_argument("target", type=Path)
+    parser.add_argument("--exclude-file", type=Path)
+    parser.add_argument("--hub", type=Path)
+    parser.add_argument("--target-key")
+    args = parser.parse_args()
+    excluded = set()
+    if args.exclude_file and args.exclude_file.exists():
+        excluded = {
+            line.strip().casefold()
+            for line in args.exclude_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+    stats = merge_into(
+        args.target,
+        args.canonical,
+        excluded,
+        allow_secret_donors=secret_donors_allowed(args.hub, args.target_key),
+    )
+    print(
+        f"  {args.target.name}: +{stats['added']} "
+        f"updated={stats['updated']} unchanged={stats['unchanged']} "
+        f"removed={stats['removed']}"
+    )
     return 0
 
 

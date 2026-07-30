@@ -122,10 +122,16 @@ class PromoteMcpTests(unittest.TestCase):
             "    servers.pop(args[-1], None)\n"
             "elif args[:2] == ['mcp', 'add']:\n"
             "    if '--transport' in args:\n"
-            "        name = args[args.index('--transport') + 2]\n"
+            "        index = args.index('--transport')\n"
+            "        name = args[index + 2]\n"
+            "        servers[name] = {'type': 'http', 'url': args[index + 3]}\n"
             "    else:\n"
             "        name = args[args.index('--scope') + 2]\n"
-            "    servers[name] = {'command': 'managed-by-fake-cli'}\n"
+            "        separator = args.index('--')\n"
+            "        servers[name] = {\n"
+            "            'command': args[separator + 1],\n"
+            "            'args': args[separator + 2:],\n"
+            "        }\n"
             "path.write_text(json.dumps(data))\n",
             encoding="utf-8",
         )
@@ -768,6 +774,89 @@ class PromoteMcpTests(unittest.TestCase):
         shared = json.loads(target.read_text())["mcpServers"]["shared"]
         self.assertEqual(shared["env"]["TOKEN"], "gemini-marker")
 
+    def test_explicit_secret_policy_can_deny_cross_agent_donors(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "secrets": {
+                        "targets": {
+                            "codex": {"allow_secret_donors": False}
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        donor = self.home / ".gemini" / "settings.json"
+        donor.parent.mkdir(parents=True)
+        donor.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "old-command",
+                            "env": {"TOKEN": "donor-marker"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        target = self.home / ".cursor" / "mcp.json"
+        env = os.environ | {"HOME": str(self.home)}
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(MERGE),
+                str(self.canonical),
+                str(target),
+                "--hub",
+                str(self.hub),
+                "--target-key",
+                "codex",
+            ],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shared = json.loads(target.read_text())["mcpServers"]["shared"]
+        self.assertNotIn("TOKEN", shared.get("env", {}))
+
+    def test_merge_hardens_secret_bearing_target_permissions(self):
+        target = self.home / ".cursor" / "mcp.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "old-command",
+                            "env": {"TOKEN": "local-secret"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        target.chmod(0o644)
+
+        result = subprocess.run(
+            ["python3", str(MERGE), str(self.canonical), str(target)],
+            cwd=REPO,
+            env=os.environ | {"HOME": str(self.home)},
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
     def test_disabled_codex_source_mcp_is_not_promoted(self):
         codex = self.home / ".codex"
         codex.mkdir(parents=True)
@@ -821,6 +910,52 @@ class PromoteMcpTests(unittest.TestCase):
             servers["cursor-native"],
             {"command": "native-command"},
         )
+
+    def test_sync_recognizes_cursor_plugin_transport_under_an_alias(self):
+        self.canonical.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "type": "http",
+                            "url": "https://example.com/mcp/",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.write_cursor_plugin(
+            {
+                "plugin-alias": {
+                    "type": "http",
+                    "url": "https://example.com/mcp?session=private",
+                }
+            }
+        )
+        cursor_path = self.home / ".cursor" / "mcp.json"
+        cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        cursor_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "type": "http",
+                            "url": "https://example.com/mcp/",
+                        },
+                        "cursor-native": {"command": "native-command"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_agent_sync("mcp")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        servers = json.loads(cursor_path.read_text())["mcpServers"]
+        self.assertNotIn("shared", servers)
+        self.assertIn("cursor-native", servers)
 
     def test_sync_restores_shared_mcp_when_cursor_plugin_is_absent(self):
         result = self.run_agent_sync("mcp")
@@ -902,6 +1037,30 @@ class PromoteMcpTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Cursor shared MCP 0/2", result.stdout)
+
+    def test_verify_rejects_disabled_and_wrong_transport_shared_mcp(self):
+        result = self.run_agent_sync("mcp")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        cursor_path = self.home / ".cursor" / "mcp.json"
+        cursor = json.loads(cursor_path.read_text())
+        cursor["mcpServers"]["shared"]["disabled"] = True
+        cursor["mcpServers"]["retire-me"]["command"] = "wrong-command"
+        cursor_path.write_text(json.dumps(cursor), encoding="utf-8")
+
+        verify = subprocess.run(
+            ["bash", str(VERIFY)],
+            env=os.environ
+            | {
+                "HOME": str(self.home),
+                "AGENT_HUB_ROOT": str(self.hub),
+            },
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("shared: disabled", verify.stdout)
+        self.assertIn("retire-me: drifted", verify.stdout)
 
 
 if __name__ == "__main__":

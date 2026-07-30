@@ -136,6 +136,15 @@ def update_agents_body(
     return desired + (f"\n{remainder}" if remainder else "")
 
 
+def normalized_section_body(body: str) -> tuple[str, ...]:
+    """Compare TOML section content while ignoring product blank-line style."""
+    return tuple(
+        line.rstrip()
+        for line in body.splitlines()
+        if line.strip()
+    )
+
+
 def reconcile(
     original: str,
     agents: dict[str, Any],
@@ -175,8 +184,10 @@ def reconcile(
         elif header == "[agents]\n":
             found_agents = True
             updated = update_agents_body(body, agents, remove_agent_keys)
-            parts.append(header + updated)
-            if updated != body:
+            if normalized_section_body(updated) == normalized_section_body(body):
+                parts.append(header + body)
+            else:
+                parts.append(header + updated)
                 changes.append("update Codex agent defaults")
         else:
             parts.append(header + body)

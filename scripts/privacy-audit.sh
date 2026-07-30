@@ -13,11 +13,10 @@ ok()   { echo "  OK    $1"; }
 bad()  { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 warn() { echo "  WARN  $1"; WARN=$((WARN+1)); }
 
-TOKEN_RE='eyJ[a-zA-Z0-9_-]{20,}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|tvly-[a-zA-Z0-9]{8,}|Bearer [A-Za-z0-9+/=]{20,}'
+TOKEN_RE='eyJ[a-zA-Z0-9_-]{20,}|sk-(proj-)?[a-zA-Z0-9_-]{20,}|gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|tvly-[a-zA-Z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{30,}|Bearer [A-Za-z0-9._~+/=-]{20,}'
 CURRENT_USER=$(basename "$HOME")
-PII_RE='/Users/[^/{]+|OneDrive-[^/ ]+'
+PII_RE='/Users/[A-Za-z0-9._-]+/|OneDrive-[^/[:space:]]+'
 HISTORY_PII_RE="$PII_RE"
-[ -n "$CURRENT_USER" ] && HISTORY_PII_RE="$HISTORY_PII_RE|$CURRENT_USER"
 # Runtime check for home path leaks (not stored as literal in source)
 HOME_LEAK=$(printf '%s' "$HOME" | sed 's/[\/&]/\\&/g')
 
@@ -32,35 +31,93 @@ github_slug() {
     printf '%s' "$slug"
 }
 
+scan_tree() {
+    local root="$1" mode="$2"
+    python3 - "$root" "$mode" "$CURRENT_USER" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+mode = sys.argv[2]
+current_user = sys.argv[3]
+excluded_parts = {
+    ".git",
+    ".worktrees",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    "node_modules",
+    "_build",
+    ".sync-backups",
+}
+excluded_files = {
+    "scripts/privacy-audit.sh",
+    "scripts/test-suite.sh",
+}
+token = re.compile(
+    r"eyJ[a-zA-Z0-9_-]{20,}"
+    r"|sk-(?:proj-)?[a-zA-Z0-9_-]{20,}"
+    r"|gh[pousr]_[a-zA-Z0-9]{20,}"
+    r"|github_pat_[a-zA-Z0-9_]{20,}"
+    r"|tvly-[a-zA-Z0-9_-]{8,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{20,}"
+    r"|AIza[0-9A-Za-z_-]{30,}"
+    r"|Bearer [A-Za-z0-9._~+/=-]{20,}"
+)
+pii = re.compile(
+    r"/Users/[A-Za-z0-9._-]+/"
+    r"|OneDrive-[^/\s]+"
+)
+if current_user:
+    home_literal = re.compile(rf"/Users/{re.escape(current_user)}/")
+else:
+    home_literal = re.compile(r"(?!x)x")
+
+found = False
+if root.exists():
+    for path in root.rglob("*"):
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if any(part in excluded_parts for part in relative.parts):
+            continue
+        if relative.as_posix() in excluded_files or not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > 5 * 1024 * 1024:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if mode == "token":
+            matched = token.search(text)
+        else:
+            matched = pii.search(text) or home_literal.search(text)
+        if matched:
+            found = True
+            break
+raise SystemExit(1 if found else 0)
+PY
+}
+
 echo "╔══════════════════════════════════════════════╗"
 echo "║     agent-sync privacy audit                 ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
 echo "[1] Public tool package ($SYNC_HOME)"
-if grep -RInE "$TOKEN_RE" "$SYNC_HOME/bin" "$SYNC_HOME/scripts" "$SYNC_HOME/examples" \
-    "$SYNC_HOME/README.md" "$SYNC_HOME/VERSION" 2>/dev/null \
-    | grep -v 'privacy-audit.sh' | grep -v 'test-suite.sh' | head -3 | grep -q .; then
+if ! scan_tree "$SYNC_HOME" token; then
     bad "tool contains token-like strings"
 else
     ok "tool has no tokens"
 fi
 
-if grep -RInE "$PII_RE" "$SYNC_HOME/bin" "$SYNC_HOME/scripts" "$SYNC_HOME/examples" \
-    "$SYNC_HOME/README.md" 2>/dev/null \
-    | grep -v 'privacy-audit.sh' | grep -v 'test-suite.sh' | head -3 | grep -q .; then
+if ! scan_tree "$SYNC_HOME" pii; then
     bad "tool contains personal paths/names"
 else
     ok "tool has no personal paths"
-fi
-
-# Scan for current user's home path in tracked tool files (dynamic, not hardcoded)
-if [ -n "$HOME_LEAK" ] && grep -RInF "$HOME" "$SYNC_HOME/bin" "$SYNC_HOME/scripts" "$SYNC_HOME/examples" \
-    "$SYNC_HOME/README.md" "$SYNC_HOME/VERSION" 2>/dev/null \
-    | grep -v 'privacy-audit.sh' | grep -v 'test-suite.sh' | head -3 | grep -q .; then
-    bad "tool contains current home path"
-else
-    ok "tool has no home path leaks"
 fi
 
 if git -C "$SYNC_HOME" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -78,8 +135,7 @@ echo "[2] Personal hub ($HUB_ROOT)"
 if [ ! -d "$HUB_ROOT" ]; then
     warn "hub not found — skip"
 else
-    if grep -RInE "$TOKEN_RE" "$HUB_ROOT" 2>/dev/null \
-        | grep -v '.git/' | grep -v 'privacy-audit' | grep -v '\${' | head -3 | grep -q .; then
+    if ! scan_tree "$HUB_ROOT" token; then
         bad "hub contains raw tokens (use \${ENV} placeholders)"
     else
         ok "hub uses placeholders (no raw tokens in Hub files)"

@@ -16,8 +16,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from config_inventory import collect_inventory
-from cursor_plugin_mcp import plugin_server_names
+from capability_resolver import active_plugin_sources, resolve_target_policy
+from config_inventory import collect_inventory, resolve_mcp_coverage
 from sync_hermes import is_registered as hermes_skills_registered
 
 
@@ -197,6 +197,100 @@ def configured_mcp_findings() -> list[dict[str, str]]:
     return findings
 
 
+def _json_has_concrete_sensitive(path: Path) -> bool:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    def visit(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        for key, child in value.items():
+            if key in {"env", "environment", "headers", "http_headers"}:
+                if isinstance(child, dict) and any(
+                    isinstance(item, str)
+                    and item
+                    and not PLACEHOLDER_RE.match(item)
+                    for item in child.values()
+                ):
+                    return True
+            if isinstance(child, dict) and visit(child):
+                return True
+            if isinstance(child, list) and any(
+                visit(item) for item in child if isinstance(item, dict)
+            ):
+                return True
+        return False
+
+    return visit(document)
+
+
+def _toml_has_concrete_sensitive(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    in_sensitive = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("["):
+            in_sensitive = bool(
+                re.match(
+                    r"^\s*\[mcp_servers\.[^\]]+\."
+                    r"(?:env|headers|http_headers)\]\s*$",
+                    line,
+                )
+            )
+            continue
+        if not in_sensitive or "=" not in line or line.lstrip().startswith("#"):
+            continue
+        _key, raw = line.split("=", 1)
+        value = raw.strip().strip('"')
+        if value and not PLACEHOLDER_RE.match(value):
+            return True
+    return False
+
+
+def sensitive_config_findings() -> list[dict[str, str]]:
+    configs = (
+        ("Cursor", HOME / ".cursor" / "mcp.json", "json"),
+        ("Gemini CLI", HOME / ".gemini" / "settings.json", "json"),
+        ("Gemini global", HOME / ".gemini" / "config" / "mcp_config.json", "json"),
+        ("Claude", HOME / ".claude.json", "json"),
+        ("OpenCode", HOME / ".config" / "opencode" / "opencode.json", "json"),
+        (
+            "Copilot / VS Code",
+            HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json",
+            "json",
+        ),
+        ("Codex / ChatGPT", HOME / ".codex" / "config.toml", "toml"),
+    )
+    findings: list[dict[str, str]] = []
+    for label, path, kind in configs:
+        if not path.exists():
+            continue
+        sensitive = (
+            _toml_has_concrete_sensitive(path)
+            if kind == "toml"
+            else _json_has_concrete_sensitive(path)
+        )
+        try:
+            unsafe_mode = bool(path.stat().st_mode & 0o077)
+        except OSError:
+            continue
+        if sensitive and unsafe_mode:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": (
+                        "Secret-bearing MCP config is group/world readable: "
+                        f"{label}."
+                    ),
+                }
+            )
+    return findings
+
+
 def normalize_plugin_spec(value: str) -> str:
     if value.startswith("@"):
         marker = value.find("@", 1)
@@ -235,7 +329,18 @@ def codex_plugins() -> set[str]:
         if re.search(r"^enabled\s*=\s*false\s*$", body, re.M):
             continue
         plugins.add(match.group(1))
+    plugins.update(
+        source.plugin_id
+        for source in active_plugin_sources("codex", HOME)
+    )
     return plugins
+
+
+def cursor_plugins() -> set[str]:
+    return {
+        normalize_plugin_spec(source.plugin_id)
+        for source in active_plugin_sources("cursor", HOME)
+    }
 
 
 def plugin_scope_findings() -> list[dict[str, str]]:
@@ -262,11 +367,30 @@ def plugin_scope_findings() -> list[dict[str, str]]:
     inventories = {
         "opencode": opencode_plugins(),
         "codex": codex_plugins(),
+        "cursor": cursor_plugins(),
     }
-    labels = {"opencode": "OpenCode", "codex": "Codex / ChatGPT"}
+    labels = {
+        "opencode": "OpenCode",
+        "codex": "Codex / ChatGPT",
+        "cursor": "Cursor",
+    }
     findings: list[dict[str, str]] = []
     for tool, policy in policies.items():
-        if tool not in inventories or not isinstance(policy, dict):
+        if tool not in inventories:
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Plugin scope policy has an unsupported tool: {tool}",
+                }
+            )
+            continue
+        if not isinstance(policy, dict):
+            findings.append(
+                {
+                    "severity": "attention",
+                    "message": f"Plugin scope policy has an invalid entry for {tool}.",
+                }
+            )
             continue
         installed = inventories[tool]
         for plugin in policy.get("required", []):
@@ -1010,6 +1134,40 @@ def count_managed_skills(path: Path, skills: list[str]) -> dict[str, int]:
     return {"configured": configured, "expected": len(skills)}
 
 
+def effective_skill_counts(
+    target: str,
+    path: Path,
+    skills: list[str],
+) -> tuple[dict[str, int], dict[str, int]]:
+    resolution = resolve_target_policy(target, HOME, HUB)
+    suppressed = {
+        skill.casefold()
+        for skill in resolution.suppressed_skills
+    }
+    configured = 0
+    managed = 0
+    managed_expected = 0
+    for skill in skills:
+        if skill.casefold() in suppressed:
+            configured += 1
+            continue
+        managed_expected += 1
+        destination = path / skill
+        source = HUB / "skills" / skill
+        if (destination / "SKILL.md").exists():
+            configured += 1
+        if destination.is_symlink():
+            try:
+                if destination.resolve() == source.resolve():
+                    managed += 1
+            except (OSError, RuntimeError):
+                pass
+    return (
+        {"configured": configured, "expected": len(skills)},
+        {"configured": managed, "expected": managed_expected},
+    )
+
+
 def count_mcp(names: set[str], shared: list[str]) -> dict[str, int]:
     shared_lower = {name.lower() for name in shared}
     return {"configured": len({name.lower() for name in names} & shared_lower), "expected": len(shared)}
@@ -1022,7 +1180,24 @@ def vscode_profiles(shared: list[str]) -> list[dict[str, Any]]:
     profiles = []
     for profile in sorted(path for path in root.iterdir() if path.is_dir()):
         config = profile / "mcp.json"
-        profiles.append({"id": profile.name, "mcp": count_mcp(json_object_keys(config, "servers"), shared)})
+        coverage = resolve_mcp_coverage(
+            f"vscode:{profile.name}",
+            HOME,
+            HUB,
+        )
+        accepted = {"hub-managed", "plugin-owned", "excluded"}
+        profiles.append(
+            {
+                "id": profile.name,
+                "mcp": {
+                    "configured": sum(
+                        value["state"] in accepted
+                        for value in coverage.values()
+                    ),
+                    "expected": len(coverage),
+                },
+            }
+        )
     return profiles
 
 
@@ -1049,32 +1224,51 @@ def capability_labels(name: str, config: Path) -> list[str]:
 
 def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]:
     targets = [
-        ("Codex / ChatGPT", "codex", HOME / ".codex" / "config.toml", HOME / ".codex" / "skills", "toml", codex_mcp_keys, ("ChatGPT.app",)),
-        ("Claude", "claude", HOME / ".claude.json", HOME / ".claude" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Claude.app",)),
-        ("Cursor", "cursor", HOME / ".cursor" / "mcp.json", HOME / ".cursor" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Cursor.app",)),
-        ("Gemini CLI", "gemini", HOME / ".gemini" / "settings.json", HOME / ".agents" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ()),
-        ("Gemini global", "", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Gemini.app",)),
-        ("Antigravity App", "", HOME / ".gemini" / "antigravity" / "mcp_config.json", HOME / ".gemini" / "antigravity" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Antigravity.app",)),
-        ("Antigravity CLI", "agy", HOME / ".gemini" / "antigravity-cli" / "mcp_config.json", HOME / ".gemini" / "antigravity-cli" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ()),
-        ("Antigravity IDE", "", HOME / ".gemini" / "antigravity-ide" / "mcp_config.json", HOME / ".gemini" / "antigravity-ide" / "skills", "json", lambda p: json_object_keys(p, "mcpServers"), ("Antigravity IDE.app",)),
-        ("OpenCode", "opencode", HOME / ".config" / "opencode" / "opencode.json", HOME / ".config" / "opencode" / "skills", "json", lambda p: json_object_keys(p, "mcp"), ()),
-        ("Copilot / VS Code", "copilot", HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json", HOME / ".copilot" / "skills", "json", lambda p: json_object_keys(p, "servers"), ("Visual Studio Code.app",)),
-        ("Agents", "", HOME / ".agents", HOME / ".agents" / "skills", "none", lambda p: set(), ()),
+        ("Codex / ChatGPT", "codex", "codex", HOME / ".codex" / "config.toml", HOME / ".codex" / "skills", "toml", ("ChatGPT.app",)),
+        ("Claude", "claude", "claude", HOME / ".claude.json", HOME / ".claude" / "skills", "json", ("Claude.app",)),
+        ("Cursor", "cursor", "cursor", HOME / ".cursor" / "mcp.json", HOME / ".cursor" / "skills", "json", ("Cursor.app",)),
+        ("Gemini CLI", "gemini", "gemini", HOME / ".gemini" / "settings.json", HOME / ".agents" / "skills", "json", ()),
+        ("Gemini global", "", "gemini-global", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", ("Gemini.app",)),
+        ("Antigravity App", "", "antigravity-app", HOME / ".gemini" / "antigravity" / "mcp_config.json", HOME / ".gemini" / "antigravity" / "skills", "json", ("Antigravity.app",)),
+        ("Antigravity CLI", "agy", "antigravity-cli", HOME / ".gemini" / "antigravity-cli" / "mcp_config.json", HOME / ".gemini" / "antigravity-cli" / "skills", "json", ()),
+        ("Antigravity IDE", "", "antigravity-ide", HOME / ".gemini" / "antigravity-ide" / "mcp_config.json", HOME / ".gemini" / "antigravity-ide" / "skills", "json", ("Antigravity IDE.app",)),
+        ("OpenCode", "opencode", "opencode", HOME / ".config" / "opencode" / "opencode.json", HOME / ".config" / "opencode" / "skills", "json", ()),
+        ("Copilot / VS Code", "copilot", "vscode", HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json", HOME / ".copilot" / "skills", "json", ("Visual Studio Code.app",)),
+        ("Agents", "", "agents", HOME / ".agents", HOME / ".agents" / "skills", "none", ()),
     ]
     records: list[dict[str, Any]] = []
-    for name, command, config, skill_dir, kind, mcp_reader, apps in targets:
+    accepted = {"hub-managed", "plugin-owned", "excluded"}
+    for name, command, target_key, config, skill_dir, kind, apps in targets:
         config_present = config.exists()
-        mcp_names = mcp_reader(config)
-        if name == "Cursor":
-            mcp_names |= plugin_server_names(HOME)
+        skill_count, managed_skill_count = effective_skill_counts(
+            target_key,
+            skill_dir,
+            skills,
+        )
+        coverage = (
+            resolve_mcp_coverage(target_key, HOME, HUB)
+            if kind != "none"
+            else {}
+        )
         record = {
             "name": name,
             "cli_present": bool(command and shutil.which(command)),
             "application_present": application_present(apps),
             "config_present": config_present,
-            "skills": count_skills(skill_dir, skills),
-            "managed_skills": count_managed_skills(skill_dir, skills),
-            "mcp": count_mcp(mcp_names, shared) if kind != "none" else {"configured": 0, "expected": 0},
+            "skills": skill_count,
+            "managed_skills": managed_skill_count,
+            "mcp": (
+                {
+                    "configured": sum(
+                        value["state"] in accepted
+                        for value in coverage.values()
+                    ),
+                    "expected": len(coverage),
+                }
+                if kind != "none"
+                else {"configured": 0, "expected": 0}
+            ),
+            "mcp_ownership": coverage,
             "models": model_names(config, kind) if kind in {"json", "toml"} else [],
             "capabilities": capability_labels(name, config),
         }
@@ -1121,12 +1315,59 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
 
 def rule_findings() -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
-    targets = [HOME / ".codex" / "AGENTS.md", HOME / ".claude" / "CLAUDE.md", HOME / ".gemini" / "GEMINI.md"]
+    targets = [
+        HOME / ".codex" / "AGENTS.md",
+        HOME / ".claude" / "CLAUDE.md",
+        HOME / ".gemini" / "GEMINI.md",
+    ]
     for rule in sorted((HUB / "rules").glob("*.md")) if (HUB / "rules").exists() else []:
         content = rule.read_text(encoding="utf-8").strip()
+        begin = f"<!-- agent-sync:begin:{rule.stem} -->"
+        end = f"<!-- agent-sync:end:{rule.stem} -->"
         for target in targets:
-            if target.exists() and target.read_text(encoding="utf-8").count(content) > 1:
-                findings.append({"severity": "attention", "message": f"Duplicate synced rule in {target.name}: {rule.name}"})
+            if not target.exists():
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": f"Missing rule target {target.name}: {rule.name}",
+                    }
+                )
+                continue
+            text = target.read_text(encoding="utf-8")
+            if text.count(begin) != 1 or text.count(end) != 1:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": f"Missing or duplicate synced rule in {target.name}: {rule.name}",
+                    }
+                )
+                continue
+            block = text.split(begin, 1)[1].split(end, 1)[0]
+            if content not in block:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": f"Drifted synced rule in {target.name}: {rule.name}",
+                    }
+                )
+    return findings
+
+
+def effective_mcp_findings() -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    accepted = {"hub-managed", "plugin-owned", "excluded"}
+    for record in target_records([], read_shared_mcp()):
+        for name, ownership in record.get("mcp_ownership", {}).items():
+            state = ownership["state"]
+            if state not in accepted:
+                findings.append(
+                    {
+                        "severity": "attention",
+                        "message": (
+                            f"{record['name']} shared MCP {name} is {state}."
+                        ),
+                    }
+                )
     return findings
 
 
@@ -1138,6 +1379,8 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
         rule_findings()
         + mcp_usability_findings()
         + configured_mcp_findings()
+        + sensitive_config_findings()
+        + effective_mcp_findings()
         + plugin_scope_findings()
         + codex_orchestration_findings()
         + skill_dependency_findings()

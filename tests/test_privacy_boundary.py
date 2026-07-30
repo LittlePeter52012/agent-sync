@@ -31,7 +31,10 @@ class PrivacyBoundaryTests(unittest.TestCase):
             )
             secret_file = hub / "mcp" / "shared-servers.json"
             secret_file.write_text(
-                '{"mcpServers":{"unsafe":{"env":{"TOKEN":"sk-aaaaaaaaaaaaaaaaaaaaaaaa"}}}}\n',
+                '{"mcpServers":{"unsafe":{"env":{"TOKEN":"'
+                + "sk-"
+                + ("a" * 24)
+                + '"}}}}\n',
                 encoding="utf-8",
             )
             before = subprocess.run(
@@ -77,6 +80,40 @@ class PrivacyBoundaryTests(unittest.TestCase):
         self.assertIn("通用流程图", text)
         self.assertIn("私人 Hub", text)
         self.assertNotIn("流程图是独立的私人或本地文件", text)
+
+    def test_audit_scans_docs_tests_and_does_not_exempt_placeholder_lines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            tool = root / "tool"
+            hub = root / "hub"
+            (tool / "docs").mkdir(parents=True)
+            (tool / "tests").mkdir()
+            hub.mkdir()
+            token = "sk-" + ("b" * 24)
+            (tool / "docs" / "unsafe.md").write_text(
+                f"placeholder=${{SAFE_TOKEN}} raw={token}\n",
+                encoding="utf-8",
+            )
+            (tool / "tests" / "safe.py").write_text(
+                "value = '${PLACEHOLDER}'\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [str(AUDIT)],
+                env=os.environ
+                | {
+                    "HOME": str(home),
+                    "AGENT_HUB_ROOT": str(hub),
+                    "AGENT_SYNC_HOME": str(tool),
+                },
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tool contains token-like strings", result.stdout)
 
 
 if __name__ == "__main__":

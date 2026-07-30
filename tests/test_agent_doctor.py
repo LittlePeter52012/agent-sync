@@ -274,6 +274,12 @@ class AgentDoctorTests(unittest.TestCase):
         )
 
     def test_doctor_reports_gemini_cli_from_actual_user_settings(self):
+        (self.hub / "mcp" / "shared-servers.json").write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "/bin/sh"}}}
+            ),
+            encoding="utf-8",
+        )
         agents_skill = self.home / ".agents" / "skills" / "example"
         agents_skill.parent.mkdir(parents=True)
         agents_skill.symlink_to(self.hub / "skills" / "example")
@@ -399,6 +405,16 @@ class AgentDoctorTests(unittest.TestCase):
 
         self.assertEqual(json.loads(result.stdout)["agents"][0]["name"], "Codex / ChatGPT")
 
+    def test_entrypoint_test_command_runs_python_and_bash_suites(self):
+        text = ENTRYPOINT.read_text(encoding="utf-8")
+        branch = text.split("    test)", 1)[1].split("        ;;", 1)[0]
+
+        unittest_index = branch.index("unittest discover")
+        syntax_index = branch.index("bash -n")
+        bash_suite_index = branch.index("test-suite.sh")
+        self.assertLess(unittest_index, syntax_index)
+        self.assertLess(syntax_index, bash_suite_index)
+
     def test_rule_sync_deduplicates_legacy_rule_copies(self):
         rule = "[Agent Sync Disambiguation Rule]\nUse agent-sync.\n"
         rules = self.hub / "rules"
@@ -413,6 +429,42 @@ class AgentDoctorTests(unittest.TestCase):
 
         target = self.home / ".codex" / "AGENTS.md"
         self.assertEqual(target.read_text().count(rule.strip()), 1)
+
+    def test_doctor_reports_missing_and_drifted_managed_rule_blocks(self):
+        rules = self.hub / "rules"
+        rules.mkdir()
+        (rules / "example-rule.md").write_text(
+            "[Example Rule]\n\nCanonical body.\n",
+            encoding="utf-8",
+        )
+        (self.home / ".codex" / "AGENTS.md").write_text(
+            "<!-- agent-sync:begin:example-rule -->\n"
+            "Drifted body.\n"
+            "<!-- agent-sync:end:example-rule -->\n",
+            encoding="utf-8",
+        )
+        (self.home / ".claude" / "CLAUDE.md").write_text(
+            "# Claude\n",
+            encoding="utf-8",
+        )
+        gemini = self.home / ".gemini" / "GEMINI.md"
+        gemini.parent.mkdir(parents=True)
+        gemini.write_text("# Gemini\n", encoding="utf-8")
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(
+            finding["message"] for finding in report["findings"]
+        )
+
+        self.assertIn("Drifted synced rule in AGENTS.md", messages)
+        self.assertIn(
+            "Missing or duplicate synced rule in CLAUDE.md",
+            messages,
+        )
+        self.assertIn(
+            "Missing or duplicate synced rule in GEMINI.md",
+            messages,
+        )
 
     def test_list_sync_reports_claude_mcp_coverage(self):
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
@@ -630,6 +682,34 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("MISSING_TOKEN", messages)
         self.assertIn("definitely-missing-mcp-command", messages)
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+
+    def test_doctor_reports_group_readable_secret_bearing_config(self):
+        claude = self.home / ".claude.json"
+        claude.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "shared-mcp",
+                            "env": {"TOKEN": "local-secret"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        claude.chmod(0o644)
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(
+            finding["message"] for finding in report["findings"]
+        )
+
+        self.assertIn(
+            "Secret-bearing MCP config is group/world readable: Claude",
+            messages,
+        )
+        self.assertNotIn("local-secret", self.run_doctor().stdout)
 
     def test_doctor_reports_missing_tool_only_mcp_and_retired_residue(self):
         (self.hub / "mcp" / "retired-servers.json").write_text(

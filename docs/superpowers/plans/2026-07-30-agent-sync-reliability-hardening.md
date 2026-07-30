@@ -298,10 +298,10 @@ git commit -m "fix: complete evaluation and Codex idempotency"
 ### Task 7: Private Hub policy, live convergence, and release verification
 
 **Files:**
-- Modify: `/Users/slavatang/.config/agent-hub/policies/tool-scopes.json`
-- Modify: `/Users/slavatang/.config/agent-hub/TOOLING.zh-CN.md`
-- Modify: `/Users/slavatang/.config/agent-hub/USAGE.zh-CN.md`
-- Modify: `/Users/slavatang/.config/agent-hub/GUIDE-总说明.md`
+- Modify: `$HOME/.config/agent-hub/policies/tool-scopes.json`
+- Modify: `$HOME/.config/agent-hub/TOOLING.zh-CN.md`
+- Modify: `$HOME/.config/agent-hub/USAGE.zh-CN.md`
+- Modify: `$HOME/.config/agent-hub/GUIDE-总说明.md`
 - Modify: `README.md`
 
 **Interfaces:**

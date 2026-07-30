@@ -194,7 +194,7 @@ class AntigravitySurfaceTests(unittest.TestCase):
             gemini_after["hooks"],
             {"PreCompress": [{"command": "/bin/sh"}]},
         )
-        self.assertEqual(gemini_settings.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(gemini_settings.stat().st_mode & 0o777, 0o600)
         for relative in roots:
             root = self.home / relative
             names = json.loads(

@@ -121,6 +121,23 @@ class ReconcileCodexOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
         self.assertIn("already converged", second.stdout)
 
+    def test_product_blank_line_formatting_is_semantically_idempotent(self):
+        first = self.run_script()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        text = self.config.read_text(encoding="utf-8")
+        text = text.replace(
+            "max_concurrent_threads_per_session = 3\n",
+            "max_concurrent_threads_per_session = 3\n\n\n",
+        )
+        self.config.write_text(text, encoding="utf-8")
+        before = self.config.read_bytes()
+
+        dry_run = self.run_script("--dry-run")
+
+        self.assertEqual(dry_run.returncode, 0, dry_run.stdout + dry_run.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertIn("already converged", dry_run.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

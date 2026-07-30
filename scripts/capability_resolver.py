@@ -259,7 +259,8 @@ def resolve_target_policy(
         hub or resolved_home / ".config" / "agent-hub"
     ).expanduser()
     target_name = target.casefold()
-    sources = active_plugin_sources(target_name, resolved_home, runner=runner)
+    target_family = target_name.split(":", 1)[0]
+    sources = active_plugin_sources(target_family, resolved_home, runner=runner)
 
     skills = _manifest_skills(resolved_hub / "manifest.yaml")
     shared_document = _load_json(resolved_hub / "mcp" / "shared-servers.json")
@@ -296,7 +297,7 @@ def resolve_target_policy(
 
     plugins_policy = policy.get("plugins", {})
     target_plugins = (
-        plugins_policy.get(target_name, {})
+        plugins_policy.get(target_name, plugins_policy.get(target_family, {}))
         if isinstance(plugins_policy, dict)
         else {}
     )
@@ -328,7 +329,7 @@ def resolve_target_policy(
 
     distribution = policy.get("distribution", {})
     target_distribution = (
-        distribution.get(target_name, {})
+        distribution.get(target_name, distribution.get(target_family, {}))
         if isinstance(distribution, dict)
         else {}
     )

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 
-SOURCE_REPO = Path("/Users/slavatang/.local/share/agent-sync")
+SOURCE_REPO = Path(__file__).resolve().parents[1]
 
 
 class UpdateToolTests(unittest.TestCase):

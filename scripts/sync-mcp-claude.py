@@ -60,6 +60,22 @@ def donor_maps() -> dict[str, dict[str, str]]:
     return result
 
 
+def secret_donors_allowed(hub: Path | None) -> bool:
+    if hub is None:
+        return True
+    policy_path = hub / "policies" / "tool-scopes.json"
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    secrets = policy.get("secrets", {}) if isinstance(policy, dict) else {}
+    targets = secrets.get("targets", {}) if isinstance(secrets, dict) else {}
+    target = targets.get("claude", {}) if isinstance(targets, dict) else {}
+    if not isinstance(target, dict) or "allow_secret_donors" not in target:
+        return True
+    return target.get("allow_secret_donors") is True
+
+
 def concrete_env(env: dict[str, Any], donors: dict[str, str]) -> dict[str, str] | None:
     out: dict[str, str] = {}
     for k, v in env.items():
@@ -138,6 +154,8 @@ def main() -> int:
     dry_run = "--dry-run" in sys.argv
     argv = [arg for arg in sys.argv[1:] if arg != "--dry-run"]
     retired_path: Optional[Path] = None
+    exclude_path: Optional[Path] = None
+    hub_path: Optional[Path] = None
     if "--retired" in argv:
         index = argv.index("--retired")
         if index + 1 >= len(argv):
@@ -145,9 +163,24 @@ def main() -> int:
             return 1
         retired_path = Path(argv[index + 1]).expanduser()
         del argv[index : index + 2]
+    if "--exclude-file" in argv:
+        index = argv.index("--exclude-file")
+        if index + 1 >= len(argv):
+            print("--exclude-file requires a file", file=sys.stderr)
+            return 1
+        exclude_path = Path(argv[index + 1]).expanduser()
+        del argv[index : index + 2]
+    if "--hub" in argv:
+        index = argv.index("--hub")
+        if index + 1 >= len(argv):
+            print("--hub requires a directory", file=sys.stderr)
+            return 1
+        hub_path = Path(argv[index + 1]).expanduser()
+        del argv[index : index + 2]
     if len(argv) != 1:
         print(
-            f"Usage: {sys.argv[0]} <canonical.json> [--retired file] [--dry-run]",
+            f"Usage: {sys.argv[0]} <canonical.json> [--retired file] "
+            "[--exclude-file file] [--hub directory] [--dry-run]",
             file=sys.stderr,
         )
         return 1
@@ -156,7 +189,14 @@ def main() -> int:
     scope = os.environ.get("CLAUDE_MCP_SYNC_SCOPE", "user")
     canonical = json.loads(Path(argv[0]).expanduser().read_text(encoding="utf-8"))
     existing = configured_names(claude_bin) if not dry_run else set()
-    donors = donor_maps()
+    donors = donor_maps() if secret_donors_allowed(hub_path) else {}
+    excluded: set[str] = set()
+    if exclude_path and exclude_path.exists():
+        excluded = {
+            line.strip().casefold()
+            for line in exclude_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
 
     retired: list[str] = []
     if retired_path and retired_path.exists():
@@ -184,6 +224,21 @@ def main() -> int:
     added = skipped = existing_count = replaced = 0
     skipped_names: list[str] = []
     for name, cfg in (canonical.get("mcpServers") or {}).items():
+        if name.casefold() in excluded:
+            if not dry_run and name.casefold() in existing:
+                subprocess.run(
+                    [
+                        claude_bin,
+                        "mcp",
+                        "remove",
+                        "--scope",
+                        scope,
+                        existing[name.casefold()],
+                    ],
+                    text=True,
+                    check=False,
+                )
+            continue
         cmd = command_for(name, cfg, scope, donors.get(name.lower(), {}))
         if not cmd:
             skipped += 1
@@ -227,6 +282,9 @@ def main() -> int:
     )
     if skipped_names:
         print("  skipped: " + ", ".join(skipped_names))
+    claude_config = Path.home() / ".claude.json"
+    if not dry_run and claude_config.exists():
+        claude_config.chmod(0o600)
     return 0
 
 

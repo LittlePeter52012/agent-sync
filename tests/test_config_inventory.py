@@ -288,6 +288,81 @@ class ConfigInventoryTests(unittest.TestCase):
         self.assertEqual(record["missing_commands"], [])
         self.assertTrue(record["ready"])
 
+    def test_effective_coverage_distinguishes_disabled_drifted_and_plugin_owned(self):
+        (self.hub / "policies").mkdir()
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            "{}\n",
+            encoding="utf-8",
+        )
+        (self.hub / "mcp" / "shared-servers.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "disabled": {
+                            "type": "http",
+                            "url": "https://example.com/disabled",
+                        },
+                        "drifted": {
+                            "type": "http",
+                            "url": "https://example.com/right",
+                        },
+                        "plugin-owned": {
+                            "type": "http",
+                            "url": "https://example.com/plugin",
+                        },
+                        "missing": {"command": "/bin/sh"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        cursor = self.home / ".cursor"
+        cursor.mkdir(parents=True)
+        (cursor / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "disabled": {
+                            "type": "http",
+                            "url": "https://example.com/disabled",
+                            "disabled": True,
+                        },
+                        "drifted": {
+                            "type": "http",
+                            "url": "https://example.com/wrong",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin = self.home / ".cursor/plugins/local/example"
+        plugin.mkdir(parents=True)
+        (plugin / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "alias": {
+                            "type": "http",
+                            "url": "https://example.com/plugin/",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        module = load_inventory_module()
+        coverage = module.resolve_mcp_coverage("cursor", self.home, self.hub)
+
+        self.assertEqual(coverage["disabled"]["state"], "disabled")
+        self.assertEqual(coverage["drifted"]["state"], "drifted")
+        self.assertEqual(coverage["plugin-owned"]["state"], "plugin-owned")
+        self.assertEqual(coverage["missing"]["state"], "missing")
+
+        trace = module.trace_mcp("plugin-owned", self.home, self.hub)
+        self.assertEqual(trace["ownership"]["cursor"], "plugin-owned")
+
     def test_sources_and_trace_entrypoints_emit_safe_json(self):
         cursor = self.home / ".cursor"
         cursor.mkdir(parents=True)

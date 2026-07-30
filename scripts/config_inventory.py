@@ -7,8 +7,15 @@ import ast
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Optional
+
+try:
+    from capability_resolver import normalize_mcp_identity, resolve_target_policy
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from capability_resolver import normalize_mcp_identity, resolve_target_policy
 
 
 CODEX_TABLE_RE = re.compile(
@@ -259,6 +266,65 @@ def rank_sources(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _target_servers(target: str, home: Path) -> tuple[dict[str, Any], bool]:
+    for tool, _label, path, bucket in _source_specs(home):
+        if tool != target:
+            continue
+        if bucket == "toml":
+            return _read_codex(path)
+        return _read_json(path, bucket)
+    return {}, False
+
+
+def resolve_mcp_coverage(
+    target: str,
+    home: Path,
+    hub: Path,
+) -> dict[str, dict[str, str]]:
+    """Classify every shared MCP for a target without exposing configuration."""
+    shared, invalid = _read_json(
+        hub / "mcp" / "shared-servers.json",
+        "mcpServers",
+    )
+    if invalid:
+        return {}
+    servers, parse_error = _target_servers(target, home)
+    by_name: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for name, config in servers.items():
+        if isinstance(name, str) and isinstance(config, dict):
+            by_name.setdefault(name.casefold(), []).append((name, config))
+
+    resolution = resolve_target_policy(target, home, hub)
+    coverage: dict[str, dict[str, str]] = {}
+    for name, canonical in shared.items():
+        if not isinstance(name, str) or not isinstance(canonical, dict):
+            continue
+        key = name.casefold()
+        owner = resolution.mcp_owners.get(key)
+        if key in resolution.suppressed_mcp:
+            state = "excluded" if owner == "excluded" else "plugin-owned"
+            coverage[name] = {"state": state, "owner": owner or state}
+            continue
+        matches = by_name.get(key, [])
+        if parse_error or len(matches) > 1:
+            coverage[name] = {"state": "drifted", "owner": "hub-managed"}
+            continue
+        if not matches:
+            coverage[name] = {"state": "missing", "owner": "hub-managed"}
+            continue
+        _actual_name, config = matches[0]
+        if not _is_enabled(config):
+            coverage[name] = {"state": "disabled", "owner": "hub-managed"}
+            continue
+        state = (
+            "hub-managed"
+            if normalize_mcp_identity(config) == normalize_mcp_identity(canonical)
+            else "drifted"
+        )
+        coverage[name] = {"state": state, "owner": "hub-managed"}
+    return coverage
+
+
 def trace_mcp(name: str, home: Path, hub: Path) -> dict[str, Any]:
     """Locate an MCP by name without exposing its configuration values."""
     normalized = name.lower()
@@ -275,8 +341,18 @@ def trace_mcp(name: str, home: Path, hub: Path) -> dict[str, Any]:
         for record in collect_inventory(home, hub)
         if normalized in {server.lower() for server in record["mcp_names"]}
     ]
+    ownership: dict[str, str] = {}
+    for tool, _label, _path, _bucket in _source_specs(home):
+        if ":" in tool:
+            continue
+        coverage = resolve_mcp_coverage(tool, home, hub)
+        for canonical, record in coverage.items():
+            if canonical.casefold() == normalized:
+                ownership[tool] = record["state"]
+                break
     return {
         "name": name,
         "hub_status": status,
         "locations": locations,
+        "ownership": ownership,
     }

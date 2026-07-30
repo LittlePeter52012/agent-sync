@@ -215,6 +215,24 @@ case "$cmd" in
         ;;
     test)
         require_hub
+        echo "[test 1/4] Python unittest suite"
+        python3 -m unittest discover -s "$AGENT_SYNC_HOME/tests" -v
+        echo "[test 2/4] Python syntax"
+        python3 - "$AGENT_SYNC_HOME" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+for path in sorted((root / "scripts").glob("*.py")):
+    ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+for path in sorted((root / "tests").glob("test_*.py")):
+    ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+print("Python syntax OK")
+PY
+        echo "[test 3/4] Bash syntax"
+        bash -n "$AGENT_SYNC_HOME/bin/agent-sync" "$SCRIPTS"/*.sh
+        echo "[test 4/4] Bash evaluation suite"
         bash "$SCRIPTS/test-suite.sh"
         ;;
     bench)

@@ -28,12 +28,13 @@ done < <(read_skill_list)
 echo ""
 echo "── 各工具覆盖矩阵 ──"
 "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
-import json, os, re, sys
+import json, os, sys
 from pathlib import Path
 
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
-from cursor_plugin_mcp import plugin_server_names
+from capability_resolver import resolve_target_policy
+from config_inventory import resolve_mcp_coverage
 from sync_hermes import is_registered as hermes_skills_registered
 
 manifest = (hub / "manifest.yaml").read_text()
@@ -55,17 +56,17 @@ if mcp_path.exists():
     shared = list(json.loads(mcp_path.read_text()).get("mcpServers", {}).keys())
 
 skill_targets = {
-    "Gemini CLI": Path.home()/".agents/skills",
-    "Gemini global": Path.home()/".gemini/config/skills",
-    "Antigravity App": Path.home()/".gemini/antigravity/skills",
-    "Antigravity CLI": Path.home()/".gemini/antigravity-cli/skills",
-    "Antigravity IDE": Path.home()/".gemini/antigravity-ide/skills",
-    "Cursor": Path.home()/".cursor/skills",
-    "Claude": Path.home()/".claude/skills",
-    "Codex": Path.home()/".codex/skills",
-    "OpenCode": Path.home()/".config/opencode/skills",
-    "Copilot": Path.home()/".copilot/skills",
-    "Agents": Path.home()/".agents/skills",
+    "Gemini CLI": ("agents", Path.home()/".agents/skills"),
+    "Gemini global": ("gemini-global", Path.home()/".gemini/config/skills"),
+    "Antigravity App": ("antigravity-app", Path.home()/".gemini/antigravity/skills"),
+    "Antigravity CLI": ("antigravity-cli", Path.home()/".gemini/antigravity-cli/skills"),
+    "Antigravity IDE": ("antigravity-ide", Path.home()/".gemini/antigravity-ide/skills"),
+    "Cursor": ("cursor", Path.home()/".cursor/skills"),
+    "Claude": ("claude", Path.home()/".claude/skills"),
+    "Codex": ("codex", Path.home()/".codex/skills"),
+    "OpenCode": ("opencode", Path.home()/".config/opencode/skills"),
+    "Copilot": ("copilot", Path.home()/".copilot/skills"),
+    "Agents": ("agents", Path.home()/".agents/skills"),
 }
 hermes_home = Path(
     os.environ.get("HERMES_HOME", str(Path.home()/".hermes"))
@@ -75,61 +76,61 @@ if (
     hermes_config.exists()
     and hermes_skills_registered(hermes_config.read_text())
 ):
-    skill_targets["Hermes"] = Path.home()/".agents/skills"
+    skill_targets["Hermes"] = ("agents", Path.home()/".agents/skills")
 
-def skill_ok(base: Path) -> str:
+def suppressed_skills(target: str) -> set[str]:
+    return set(resolve_target_policy(target, Path.home(), hub).suppressed_skills)
+
+def skill_ok(target: str, base: Path) -> str:
     if not skills:
         return "0/0"
-    ok = sum(1 for s in skills if (base/s/"SKILL.md").exists())
+    suppressed = suppressed_skills(target)
+    ok = sum(
+        1
+        for skill in skills
+        if skill.casefold() in suppressed or (base/skill/"SKILL.md").exists()
+    )
     return f"{ok}/{len(skills)}"
 
-def skill_managed(base: Path) -> str:
+def skill_managed(target: str, base: Path) -> str:
     if not skills:
         return "0/0"
+    suppressed = suppressed_skills(target)
     ok = 0
+    expected = 0
     for skill in skills:
+        if skill.casefold() in suppressed:
+            continue
+        expected += 1
         destination = base / skill
         source = hub / "skills" / skill
         if destination.is_symlink() and os.path.realpath(destination) == os.path.realpath(source):
             ok += 1
-    return f"{ok}/{len(skills)}"
-
-def mcp_names_json(path: Path, key: str) -> set[str]:
-    if not path.exists():
-        return set()
-    d = json.loads(path.read_text())
-    return {k.lower() for k in (d.get(key) or {})}
-
-def mcp_names_toml(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    return {m.group(1).lower() for m in re.finditer(r"^\[mcp_servers\.([^\].]+)\]", path.read_text(), re.M)}
+    return f"{ok}/{expected}"
 
 print(f"{'工具':<20} {'Skills':<10} {'Hub受管':<10} {'共享MCP':<10}")
 print("-" * 56)
-for name, base in skill_targets.items():
-    print(f"{name:<20} {skill_ok(base):<10} {skill_managed(base):<10} {'—':<10}")
+for name, (target, base) in skill_targets.items():
+    print(f"{name:<20} {skill_ok(target, base):<10} {skill_managed(target, base):<10} {'—':<10}")
 
 if shared:
-    shared_l = [s.lower() for s in shared]
     mcp_targets = {
-        "Gemini CLI": (Path.home()/".gemini/settings.json", "json", "mcpServers"),
-        "Gemini global": (Path.home()/".gemini/config/mcp_config.json", "json", "mcpServers"),
-        "Antigravity App": (Path.home()/".gemini/antigravity/mcp_config.json", "json", "mcpServers"),
-        "Antigravity CLI": (Path.home()/".gemini/antigravity-cli/mcp_config.json", "json", "mcpServers"),
-        "Antigravity IDE": (Path.home()/".gemini/antigravity-ide/mcp_config.json", "json", "mcpServers"),
-        "Cursor": (Path.home()/".cursor/mcp.json", "json", "mcpServers"),
-        "Claude": (Path.home()/".claude.json", "json", "mcpServers"),
-        "VSCode/Copilot": (Path.home()/"Library/Application Support/Code/User/mcp.json", "json", "servers"),
-        "OpenCode": (Path.home()/".config/opencode/opencode.json", "json", "mcp"),
-        "Codex": (Path.home()/".codex/config.toml", "toml", ""),
+        "Gemini CLI": "gemini",
+        "Gemini global": "gemini-global",
+        "Antigravity App": "antigravity-app",
+        "Antigravity CLI": "antigravity-cli",
+        "Antigravity IDE": "antigravity-ide",
+        "Cursor": "cursor",
+        "Claude": "claude",
+        "VSCode/Copilot": "vscode",
+        "OpenCode": "opencode",
+        "Codex": "codex",
     }
-    for name, (path, kind, key) in mcp_targets.items():
-        names = mcp_names_json(path, key) if kind == "json" else mcp_names_toml(path)
-        if name == "Cursor":
-            names |= plugin_server_names(Path.home())
-        have = sum(1 for s in shared_l if s in names)
-        print(f"{name:<20} {'—':<10} {'—':<10} {have}/{len(shared)}")
+    accepted = {"hub-managed", "plugin-owned", "excluded"}
+    for name, target in mcp_targets.items():
+        coverage = resolve_mcp_coverage(target, Path.home(), hub)
+        have = sum(value["state"] in accepted for value in coverage.values())
+        print(f"{name:<20} {'—':<10} {'—':<10} {have}/{len(coverage)}")
 PY
 
 echo ""
