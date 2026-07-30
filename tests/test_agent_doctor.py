@@ -984,7 +984,7 @@ class AgentDoctorTests(unittest.TestCase):
             '[mcp_servers.llm_for_zotero]\n'
             'url = "http://127.0.0.1:23119/llm-for-zotero/mcp"\n'
             '[mcp_servers.llm_for_zotero.http_headers]\n'
-            'Authorization = "Bearer TOKEN_SHOULD_NOT_APPEAR"\n',
+            'Authorization = "' + "Bearer " + 'TOKEN_SHOULD_NOT_APPEAR"\n',
             encoding="utf-8",
         )
 

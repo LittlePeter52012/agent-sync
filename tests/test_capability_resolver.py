@@ -9,6 +9,7 @@ from pathlib import Path
 from scripts.capability_resolver import (
     McpIdentity,
     active_plugin_sources,
+    mcp_identity_matches,
     normalize_mcp_identity,
     resolve_target_policy,
 )
@@ -211,6 +212,26 @@ class CapabilityResolverTests(unittest.TestCase):
                 {"command": "/usr/local/bin/tool", "args": ["serve", "/private/path"]}
             ),
             McpIdentity("stdio", "tool", ("serve", "<absolute-path>")),
+        )
+
+    def test_canonical_placeholder_argument_matches_local_resolved_path(self):
+        self.assertTrue(
+            mcp_identity_matches(
+                {
+                    "command": "npx",
+                    "args": [
+                        "package",
+                        "/Users/example/local-vault",
+                    ],
+                },
+                {
+                    "command": "npx",
+                    "args": [
+                        "package",
+                        "${OBSIDIAN_VAULT}",
+                    ],
+                },
+            )
         )
 
     def test_resolution_combines_exact_and_policy_suppression(self):

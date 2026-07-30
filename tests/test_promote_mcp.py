@@ -132,6 +132,13 @@ class PromoteMcpTests(unittest.TestCase):
             "            'command': args[separator + 1],\n"
             "            'args': args[separator + 2:],\n"
             "        }\n"
+            "        env = {}\n"
+            "        for position, value in enumerate(args):\n"
+            "            if value == '--env':\n"
+            "                key, item = args[position + 1].split('=', 1)\n"
+            "                env[key] = item\n"
+            "        if env:\n"
+            "            servers[name]['env'] = env\n"
             "path.write_text(json.dumps(data))\n",
             encoding="utf-8",
         )
@@ -966,6 +973,18 @@ class PromoteMcpTests(unittest.TestCase):
         )["mcpServers"]
         self.assertIn("shared", servers)
         self.assertIn("retire-me", servers)
+
+    def test_second_mcp_sync_keeps_semantically_matching_claude_config(self):
+        first = self.run_agent_sync("mcp")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        claude = self.home / ".claude.json"
+        before = claude.read_bytes()
+
+        second = self.run_agent_sync("mcp")
+
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(claude.read_bytes(), before)
+        self.assertIn("unchanged=2", second.stdout)
 
     def test_verify_counts_cursor_plugin_shared_mcp(self):
         result = self.run_agent_sync("mcp")

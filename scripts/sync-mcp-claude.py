@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from capability_resolver import mcp_identity_matches
+
 
 PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
@@ -121,6 +123,43 @@ def configured_names(claude_bin: str) -> dict[str, str]:
     return names
 
 
+def configured_servers() -> dict[str, tuple[str, dict[str, Any]]]:
+    path = Path.home() / ".claude.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    servers = document.get("mcpServers", {}) if isinstance(document, dict) else {}
+    if not isinstance(servers, dict):
+        return {}
+    return {
+        name.casefold(): (name, config)
+        for name, config in servers.items()
+        if isinstance(name, str) and isinstance(config, dict)
+    }
+
+
+def configuration_matches(
+    actual: dict[str, Any],
+    canonical: dict[str, Any],
+) -> bool:
+    if not mcp_identity_matches(actual, canonical):
+        return False
+    actual_env = actual.get("env") or actual.get("environment") or {}
+    canonical_env = canonical.get("env") or {}
+    if isinstance(canonical_env, dict) and not set(canonical_env).issubset(
+        actual_env if isinstance(actual_env, dict) else {}
+    ):
+        return False
+    actual_headers = actual.get("headers") or actual.get("http_headers") or {}
+    canonical_headers = canonical.get("headers") or {}
+    if isinstance(canonical_headers, dict) and not set(canonical_headers).issubset(
+        actual_headers if isinstance(actual_headers, dict) else {}
+    ):
+        return False
+    return actual.get("enabled", True) is not False and actual.get("disabled") is not True
+
+
 def command_for(name: str, cfg: dict[str, Any], scope: str, donors: dict[str, str]) -> list[str] | None:
     typ = cfg.get("type", "stdio")
     if typ == "http" or cfg.get("url"):
@@ -189,6 +228,7 @@ def main() -> int:
     scope = os.environ.get("CLAUDE_MCP_SYNC_SCOPE", "user")
     canonical = json.loads(Path(argv[0]).expanduser().read_text(encoding="utf-8"))
     existing = configured_names(claude_bin) if not dry_run else set()
+    actual_servers = configured_servers() if not dry_run else {}
     donors = donor_maps() if secret_donors_allowed(hub_path) else {}
     excluded: set[str] = set()
     if exclude_path and exclude_path.exists():
@@ -221,7 +261,7 @@ def main() -> int:
         elif subprocess.run(remove_cmd, text=True, check=False).returncode == 0:
             retired_removed += 1
 
-    added = skipped = existing_count = replaced = 0
+    added = skipped = existing_count = replaced = unchanged = 0
     skipped_names: list[str] = []
     for name, cfg in (canonical.get("mcpServers") or {}).items():
         if name.casefold() in excluded:
@@ -246,6 +286,10 @@ def main() -> int:
             continue
         if name.lower() in existing:
             existing_count += 1
+            actual = actual_servers.get(name.casefold())
+            if actual and configuration_matches(actual[1], cfg):
+                unchanged += 1
+                continue
             remove_cmd = [
                 claude_bin,
                 "mcp",
@@ -278,7 +322,8 @@ def main() -> int:
 
     print(
         f"  claude mcp: +{added} replaced={replaced} "
-        f"retired={retired_removed} existing={existing_count} skipped={skipped}"
+        f"retired={retired_removed} existing={existing_count} "
+        f"unchanged={unchanged} skipped={skipped}"
     )
     if skipped_names:
         print("  skipped: " + ", ".join(skipped_names))

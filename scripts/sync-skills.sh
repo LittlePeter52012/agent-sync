@@ -155,8 +155,20 @@ done < <(skill_target_specs)
 log "Verification:"
 for skill in "${SKILLS[@]}"; do
     printf "  %-35s" "$skill"
-    while IFS= read -r target_dir; do
-        if skill_present "$target_dir/$skill"; then printf " ✅"; else printf " ❌"; fi
-    done < <(skill_targets)
+    while IFS='|' read -r target_key target_label target_dir; do
+        suppressed=$(
+            "$PY" "$SCRIPT_DIR/capability_resolver.py" \
+                --home "$HOME" \
+                --hub "$HUB_ROOT" \
+                suppressed-skills "$target_key"
+        )
+        if printf '%s\n' "$suppressed" | grep -Fqx "$skill"; then
+            printf " 🧩"
+        elif skill_present "$target_dir/$skill"; then
+            printf " ✅"
+        else
+            printf " ❌"
+        fi
+    done < <(skill_target_specs)
     echo
 done

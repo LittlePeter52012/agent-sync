@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from capability_resolver import normalize_mcp_identity, resolve_target_policy
+    from capability_resolver import mcp_identity_matches, resolve_target_policy
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from capability_resolver import normalize_mcp_identity, resolve_target_policy
+    from capability_resolver import mcp_identity_matches, resolve_target_policy
 
 
 CODEX_TABLE_RE = re.compile(
@@ -318,7 +318,7 @@ def resolve_mcp_coverage(
             continue
         state = (
             "hub-managed"
-            if normalize_mcp_identity(config) == normalize_mcp_identity(canonical)
+            if mcp_identity_matches(config, canonical)
             else "drifted"
         )
         coverage[name] = {"state": state, "owner": "hub-managed"}

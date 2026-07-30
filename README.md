@@ -139,14 +139,21 @@ server names, preventing duplicate tool exposure such as `MinerU` plus
 directories. Shared rules still use the single global
 `~/.gemini/GEMINI.md`; root-specific rule copies are intentionally not created.
 
-### Cursor plugin-owned shared MCP
+### Product plugin ownership and duplicate prevention
 
-Cursor local plugins remain product-owned. When a local plugin declares an
-enabled MCP server whose name also appears in the Hub shared set, Agent Sync
-counts the plugin as satisfying Cursor coverage and removes only the duplicate
-user-level entry from `~/.cursor/mcp.json`. The plugin files and unrelated
-Cursor MCP servers are never modified. If the plugin is removed, the next sync
-restores the Hub definition automatically.
+Product plugins remain owned by their product manager. For Cursor, Agent Sync
+uses the active plugin log plus the declared cache revision, or an explicit
+local-plugin directory; a cache directory by itself is not treated as enabled.
+When an active plugin exposes the same Skill, MCP name, or normalized MCP
+transport as the Hub, Agent Sync counts it as `plugin-owned` and removes only
+the duplicate Hub-managed link or entry. Plugin files and unrelated local
+capabilities are never modified. If the plugin disappears, the next sync
+restores the Hub capability automatically.
+
+Target-specific `distribution.exclude_skills` and `exclude_mcp` policy entries
+provide explicit exclusions. Conditional `plugins.<target>.prefer_marketplace`
+entries apply only while that plugin is active, preventing a stale marketplace
+cache from hiding a Hub capability.
 
 ## Two-layer model
 
@@ -163,6 +170,9 @@ restores the Hub definition automatically.
   Rules, the Skill whitelist, and retired shared-server names.
 - Local credentials and machine-specific paths stay in environment variables or
   local Agent configurations; Hub definitions should use `${ENV}` placeholders.
+- Cross-Agent secret donor compatibility is controlled explicitly through
+  `secrets.targets.<target>.allow_secret_donors`. Secret-bearing MCP
+  configurations are written with mode `0600`.
 - `agent-sync push` runs the privacy audit before staging or pushing Hub files.
   Normal `sync` never copies private Hub content into the public tool repository.
 
@@ -197,7 +207,7 @@ agent-sync multica --apply # explicitly apply allowlisted Multica changes
 agent-sync list          # coverage matrix
 agent-sync verify        # structural verification
 agent-sync verify --strict # structural verification + runtime doctor
-agent-sync test
+agent-sync test          # Python tests + syntax checks + Bash evaluation suite
 agent-sync status
 agent-sync doctor        # local agent capabilities and sync-health report
 agent-sync doctor --runtime # add bounded Cursor/OpenCode/Claude MCP probes
@@ -216,7 +226,8 @@ agent-sync push -m "msg" # commit/push the personal hub (if it is a git repo)
 model/provider names, Skill coverage and canonical Hub ownership, shared-MCP
 coverage, tool-only MCP executable health, optional CLI-backed Skill
 dependencies, required lifecycle-hook wiring, retired MCP residue, plugin/MCP
-scope drift, and duplicate synced rules.
+scope drift, exact managed-rule drift, disabled or wrong-transport shared MCPs,
+and unsafe permissions on secret-bearing configurations.
 `doctor --runtime` adds bounded OpenCode and Claude CLI probes plus a two-second
 compatibility check for Cursor loopback HTTP MCP endpoints. The Cursor check
 sends an unauthenticated `GET` only to `127.0.0.1`, `localhost`, or `::1`, never
@@ -236,6 +247,12 @@ Hub-managed MCP names, and normalizes managed rule blocks. Tool-only MCP servers
 remain untouched. For shared MCP names, Hub command, URL, transport, and normal
 arguments are authoritative; existing local secrets and machine-specific
 absolute paths are preserved.
+
+`verify`, `list`, `trace`, and Doctor share one capability resolver. A shared
+MCP is healthy only when its enabled URL or stdio structure matches the Hub, an
+active plugin owns an exact match, or target policy explicitly excludes it.
+The reported states are `hub-managed`, `plugin-owned`, `excluded`, `disabled`,
+`drifted`, and `missing`.
 
 ### Optional Multica control-plane adapter
 

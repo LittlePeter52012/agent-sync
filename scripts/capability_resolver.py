@@ -90,6 +90,30 @@ def normalize_mcp_identity(config: Mapping[str, Any]) -> McpIdentity:
     return McpIdentity("stdio", endpoint, args)
 
 
+def mcp_identity_matches(
+    actual: Mapping[str, Any],
+    canonical: Mapping[str, Any],
+) -> bool:
+    """Compare transport shape while treating canonical placeholders as slots."""
+    actual_identity = normalize_mcp_identity(actual)
+    canonical_identity = normalize_mcp_identity(canonical)
+    if (
+        actual_identity.transport != canonical_identity.transport
+        or actual_identity.endpoint != canonical_identity.endpoint
+        or len(actual_identity.args) != len(canonical_identity.args)
+    ):
+        return False
+    for actual_arg, canonical_arg in zip(
+        actual_identity.args,
+        canonical_identity.args,
+    ):
+        if re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", canonical_arg):
+            continue
+        if actual_arg != canonical_arg:
+            return False
+    return True
+
+
 def _plugin_capabilities(
     target: str,
     plugin_id: str,
@@ -278,20 +302,27 @@ def resolve_target_policy(
         for name, config in shared.items()
         if isinstance(name, str) and isinstance(config, dict) and _enabled(config)
     }
+    shared_configs = {
+        name.casefold(): config
+        for name, config in shared.items()
+        if isinstance(name, str) and isinstance(config, dict) and _enabled(config)
+    }
     for source in sources:
         owner = f"plugin:{source.plugin_id.split('@', 1)[0]}"
         for skill in source.skills:
             if skill in skills:
                 suppressed_skills.add(skill)
                 skill_owners[skill] = owner
-        plugin_identities = {
-            normalize_mcp_identity(config)
-            for config in source.mcp_servers.values()
-            if isinstance(config, dict)
-        }
         plugin_names = {name.casefold() for name in source.mcp_servers}
-        for name, identity in shared_identities.items():
-            if name in plugin_names or identity in plugin_identities:
+        for name, _identity in shared_identities.items():
+            canonical = shared_configs.get(name, {})
+            transport_match = any(
+                isinstance(config, dict)
+                and isinstance(canonical, dict)
+                and mcp_identity_matches(config, canonical)
+                for config in source.mcp_servers.values()
+            )
+            if name in plugin_names or transport_match:
                 suppressed_mcp.add(name)
                 mcp_owners[name] = owner
 
