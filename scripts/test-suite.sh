@@ -36,25 +36,34 @@ fi
 echo ""
 echo "[2] Skills coverage"
 check_skills_dir() {
-  local tool="$1" base="$2"
-  local n=0 s
+  local tool="$1" target_key="$2" base="$3"
+  local n=0 s suppressed
+  suppressed=$(
+    "$PY" "$SCRIPT_DIR/capability_resolver.py" \
+      --home "$HOME" \
+      --hub "$HUB_ROOT" \
+      suppressed-skills "$target_key"
+  )
   for s in $SKILLS; do
-    [ -f "$base/$s/SKILL.md" ] && n=$((n+1))
+    if printf '%s\n' "$suppressed" | grep -Fqx "$s" \
+      || [ -f "$base/$s/SKILL.md" ]; then
+      n=$((n+1))
+    fi
   done
   if [ "$n" -eq "$SKILL_COUNT" ]; then ok "$tool skills $n/$SKILL_COUNT"
   else bad "$tool skills $n/$SKILL_COUNT"; fi
 }
-check_skills_dir "Claude Code" "$HOME/.claude/skills"
-check_skills_dir "Cursor" "$HOME/.cursor/skills"
-check_skills_dir "Codex" "$HOME/.codex/skills"
-check_skills_dir "Gemini CLI" "$HOME/.agents/skills"
-check_skills_dir "Gemini global" "$HOME/.gemini/config/skills"
-check_skills_dir "Antigravity App" "$HOME/.gemini/antigravity/skills"
-check_skills_dir "Antigravity CLI" "$HOME/.gemini/antigravity-cli/skills"
-check_skills_dir "Antigravity IDE" "$HOME/.gemini/antigravity-ide/skills"
-check_skills_dir "OpenCode" "$HOME/.config/opencode/skills"
-check_skills_dir "Copilot" "$HOME/.copilot/skills"
-check_skills_dir "Agents" "$HOME/.agents/skills"
+check_skills_dir "Claude Code" "claude" "$HOME/.claude/skills"
+check_skills_dir "Cursor" "cursor" "$HOME/.cursor/skills"
+check_skills_dir "Codex" "codex" "$HOME/.codex/skills"
+check_skills_dir "Gemini CLI" "agents" "$HOME/.agents/skills"
+check_skills_dir "Gemini global" "gemini-global" "$HOME/.gemini/config/skills"
+check_skills_dir "Antigravity App" "antigravity-app" "$HOME/.gemini/antigravity/skills"
+check_skills_dir "Antigravity CLI" "antigravity-cli" "$HOME/.gemini/antigravity-cli/skills"
+check_skills_dir "Antigravity IDE" "antigravity-ide" "$HOME/.gemini/antigravity-ide/skills"
+check_skills_dir "OpenCode" "opencode" "$HOME/.config/opencode/skills"
+check_skills_dir "Copilot" "copilot" "$HOME/.copilot/skills"
+check_skills_dir "Agents" "agents" "$HOME/.agents/skills"
 if [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ]; then
   if "$PY" "$SCRIPT_DIR/sync_hermes.py" --check >/dev/null; then
     ok "Hermes external Skills"
@@ -66,64 +75,71 @@ fi
 echo ""
 echo "[3] Symlinks point at hub"
 check_links() {
-  local tool="$1" base="$2"
-  local broken=0 s
+  local tool="$1" target_key="$2" base="$3"
+  local broken=0 s suppressed
+  suppressed=$(
+    "$PY" "$SCRIPT_DIR/capability_resolver.py" \
+      --home "$HOME" \
+      --hub "$HUB_ROOT" \
+      suppressed-skills "$target_key"
+  )
   for s in $SKILLS; do
+    if printf '%s\n' "$suppressed" | grep -Fqx "$s"; then
+      if skill_is_hub_managed "$base/$s" "$HUB_ROOT/skills/$s"; then
+        broken=$((broken+1))
+      fi
+      continue
+    fi
     if [ ! -f "$base/$s/SKILL.md" ]; then broken=$((broken+1)); continue; fi
     skill_is_hub_managed "$base/$s" "$HUB_ROOT/skills/$s" \
       || broken=$((broken+1))
   done
   if [ "$broken" -eq 0 ]; then ok "$tool symlinks"; else bad "$tool has $broken bad links"; fi
 }
-check_links "Claude Code" "$HOME/.claude/skills"
-check_links "Cursor" "$HOME/.cursor/skills"
-check_links "Codex" "$HOME/.codex/skills"
-check_links "Gemini CLI" "$HOME/.agents/skills"
-check_links "Gemini global" "$HOME/.gemini/config/skills"
-check_links "Antigravity App" "$HOME/.gemini/antigravity/skills"
-check_links "Antigravity CLI" "$HOME/.gemini/antigravity-cli/skills"
-check_links "Antigravity IDE" "$HOME/.gemini/antigravity-ide/skills"
-check_links "OpenCode" "$HOME/.config/opencode/skills"
-check_links "Copilot" "$HOME/.copilot/skills"
-check_links "Agents" "$HOME/.agents/skills"
+check_links "Claude Code" "claude" "$HOME/.claude/skills"
+check_links "Cursor" "cursor" "$HOME/.cursor/skills"
+check_links "Codex" "codex" "$HOME/.codex/skills"
+check_links "Gemini CLI" "agents" "$HOME/.agents/skills"
+check_links "Gemini global" "gemini-global" "$HOME/.gemini/config/skills"
+check_links "Antigravity App" "antigravity-app" "$HOME/.gemini/antigravity/skills"
+check_links "Antigravity CLI" "antigravity-cli" "$HOME/.gemini/antigravity-cli/skills"
+check_links "Antigravity IDE" "antigravity-ide" "$HOME/.gemini/antigravity-ide/skills"
+check_links "OpenCode" "opencode" "$HOME/.config/opencode/skills"
+check_links "Copilot" "copilot" "$HOME/.copilot/skills"
+check_links "Agents" "agents" "$HOME/.agents/skills"
 
 echo ""
 echo "[4] MCP (if hub defines shared servers)"
 if [ -f "$HUB_ROOT/mcp/shared-servers.json" ]; then
   if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
-import json, re, sys
+import sys
 from pathlib import Path
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
-from cursor_plugin_mcp import plugin_server_names
+from config_inventory import resolve_mcp_coverage
 
-shared = [k.lower() for k in json.loads((hub/"mcp/shared-servers.json").read_text()).get("mcpServers", {})]
 home = Path.home()
 checks = [
-    ("Gemini CLI", home/".gemini/settings.json", "json", "mcpServers"),
-    ("Gemini global", home/".gemini/config/mcp_config.json", "json", "mcpServers"),
-    ("Antigravity App", home/".gemini/antigravity/mcp_config.json", "json", "mcpServers"),
-    ("Antigravity CLI", home/".gemini/antigravity-cli/mcp_config.json", "json", "mcpServers"),
-    ("Antigravity IDE", home/".gemini/antigravity-ide/mcp_config.json", "json", "mcpServers"),
-    ("Cursor", home/".cursor/mcp.json", "json", "mcpServers"),
-    ("Claude", home/".claude.json", "json", "mcpServers"),
-    ("VSCode/Copilot", home/"Library/Application Support/Code/User/mcp.json", "json", "servers"),
-    ("OpenCode", home/".config/opencode/opencode.json", "json", "mcp"),
-    ("Codex", home/".codex/config.toml", "toml", ""),
+    ("Gemini CLI", "gemini"),
+    ("Gemini global", "gemini-global"),
+    ("Antigravity App", "antigravity-app"),
+    ("Antigravity CLI", "antigravity-cli"),
+    ("Antigravity IDE", "antigravity-ide"),
+    ("Cursor", "cursor"),
+    ("Claude", "claude"),
+    ("VSCode/Copilot", "vscode"),
+    ("OpenCode", "opencode"),
+    ("Codex", "codex"),
 ]
 fail = 0
-for name, path, kind, key in checks:
-    if kind == "json":
-        names = {k.lower() for k in json.loads(path.read_text()).get(key, {})}
-    else:
-        names = {m.group(1).lower() for m in re.finditer(r"^\[mcp_servers\.([^\].]+)\]", path.read_text(), re.M)}
-    if name == "Cursor":
-        names |= plugin_server_names(home)
-    have = sum(1 for s in shared if s in names)
-    status = "PASS" if have == len(shared) else "FAIL"
+accepted = {"hub-managed", "plugin-owned", "excluded"}
+for name, target in checks:
+    coverage = resolve_mcp_coverage(target, home, hub)
+    have = sum(item["state"] in accepted for item in coverage.values())
+    status = "PASS" if have == len(coverage) else "FAIL"
     if status == "FAIL":
         fail += 1
-    print(f"  {status}  {name} MCP {have}/{len(shared)}")
+    print(f"  {status}  {name} MCP {have}/{len(coverage)}")
 sys.exit(fail)
 PY
   then PASS=$((PASS+10)); else FAIL=$((FAIL+10)); fi
@@ -164,20 +180,10 @@ fi
 
 echo ""
 echo "[5] Tool package privacy (agent-sync repo must stay clean)"
-# Only scan the TOOL package, never the personal hub
-if grep -RInE 'eyJ[a-zA-Z0-9_-]{20,}|tvly-[a-zA-Z0-9]{8,}|Bearer [A-Za-z0-9+/=]{16,}' \
-  "$SYNC_HOME/bin" "$SYNC_HOME/scripts" "$SYNC_HOME/examples" "$SYNC_HOME"/README.md 2>/dev/null \
-  | grep -v 'test-suite.sh' | head -5 | grep -q .; then
-  bad "tool package may contain tokens"
+if bash "$SCRIPT_DIR/privacy-audit.sh" >/dev/null 2>&1; then
+  ok "privacy audit passes"
 else
-  ok "tool package has no token patterns"
-fi
-if grep -RInE '/Users/[^/{]|OneDrive-个人|DoctorTANG' \
-  "$SYNC_HOME/bin" "$SYNC_HOME/scripts" "$SYNC_HOME/examples" "$SYNC_HOME"/README.md "$SYNC_HOME"/VERSION 2>/dev/null \
-  | grep -v 'test-suite.sh' | grep -v 'privacy-audit.sh' | head -5 | grep -q .; then
-  bad "tool package contains personal paths"
-else
-  ok "tool package has no personal paths"
+  bad "privacy audit passes"
 fi
 
 echo ""
@@ -190,8 +196,6 @@ else
   if [ "$rc" -eq 2 ]; then ok "update --check runs (updates available)"
   else bad "update --check runs"; fi
 fi
-if bash "$SCRIPT_DIR/privacy-audit.sh" >/dev/null 2>&1; then ok "privacy audit passes"; else bad "privacy audit passes"; fi
-
 echo ""
 echo "[7] Idempotency"
 if "$SYNC_HOME/bin/agent-sync" all >/tmp/agent-sync-retest.log 2>&1; then ok "second agent-sync all"; else bad "second agent-sync all"; fi

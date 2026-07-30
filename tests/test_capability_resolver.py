@@ -221,7 +221,7 @@ class CapabilityResolverTests(unittest.TestCase):
                     "command": "npx",
                     "args": [
                         "package",
-                        "/Users/example/local-vault",
+                        "/tmp/local-vault",
                     ],
                 },
                 {
