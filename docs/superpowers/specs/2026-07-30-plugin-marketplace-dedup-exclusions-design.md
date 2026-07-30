@@ -52,7 +52,7 @@ Skills are duplicates. The MCPs are related but are not exact substitutes.
 ### Phase 1
 
 - Add a reusable product-plugin capability model.
-- Implement the first marketplace adapter for Cursor.
+- Implement marketplace adapters for Cursor and Codex.
 - Apply plugin precedence to both Skills and MCPs.
 - Add per-target conditional and unconditional exclusions.
 - Update sync, verify, status, trace, and Doctor behavior.
@@ -61,9 +61,9 @@ Skills are duplicates. The MCPs are related but are not exact substitutes.
 
 ### Future adapters
 
-The model must allow adapters for Codex, VS Code, Claude, Gemini, Antigravity,
-or other products when their plugin managers expose reliable enabled-state
-evidence. Phase 1 does not guess those formats or scan arbitrary caches.
+The model must allow adapters for VS Code, Claude, Gemini, Antigravity, or other
+products when their plugin managers expose reliable enabled-state evidence.
+Phase 1 does not guess those formats or scan arbitrary caches.
 
 ### Non-goals
 
@@ -145,6 +145,56 @@ If active state cannot be established reliably:
 This fail-open behavior prefers a visible duplicate over silently removing the
 only working capability.
 
+## Codex Active-Plugin Detection
+
+Codex exposes authoritative local plugin state through:
+
+```bash
+codex plugin list --json
+```
+
+The Codex adapter uses only entries for which both `installed` and `enabled`
+are true. It records the full `pluginId`, marketplace name, version, install
+policy, and source class, then reads the declared Skill/MCP capabilities from
+the reported plugin source.
+
+The adapter does not infer enabled state from `~/.codex/plugins/cache/`. A
+cached plugin absent from the CLI's installed list is inactive.
+
+If the Codex CLI is missing, returns malformed JSON, or reports a source that
+cannot be inspected:
+
+- sync keeps the Hub capability;
+- verification does not count the plugin as coverage;
+- Doctor reports `plugin-state-uncertain`;
+- no Codex plugin or local MCP configuration is modified.
+
+### Codex local privacy boundary
+
+The ownership report must distinguish these surfaces:
+
+- **Codex marketplace plugin** — installed and enabled through Codex's plugin
+  manager; its lifecycle may follow the Codex product/account policy;
+- **Codex local MCP** — defined in the local
+  `~/.codex/config.toml`;
+- **Hub Skill** — stored in the local personal Hub and linked into the local
+  Codex Skill directory;
+- **MCP OAuth credentials** — runtime authentication material managed locally
+  by Codex or the operating-system credential store and never copied into the
+  Hub.
+
+For the present Cloudflare setup:
+
+- `cloudflare@openai-curated-remote` must remain absent from the installed Codex
+  plugin list;
+- `cloudflare-local` must remain enabled in the local Codex MCP list;
+- its local config stores only `https://mcp.cloudflare.com/mcp`, not a raw
+  token;
+- the `cloudflare` Skill remains Hub-managed and local;
+- Doctor treats reinstallation of
+  `cloudflare@openai-curated-remote` as a policy violation so shared-account
+  exposure is visible immediately.
+
 ## Policy Schema
 
 `policies/tool-scopes.json` gains two optional sections.
@@ -210,6 +260,12 @@ This prevents duplicate documentation/Skill guidance without removing the
 broader domain and account management surface. If the user later prefers a
 plugin-only Cursor setup, `cloudflare-local` can be added to the conditional
 `mcp` list without changing code.
+
+For Codex, the initial policy adds
+`cloudflare@openai-curated-remote` to the existing Codex forbidden-plugin list.
+The local `cloudflare-local` MCP and Hub-managed `cloudflare` Skill remain
+enabled. `agent-sync` does not install or authenticate a Codex marketplace
+plugin as part of synchronization.
 
 ## Sync Behavior
 
@@ -282,6 +338,9 @@ Doctor checks:
 - suppressed capabilities have an active owning plugin;
 - plugin removal restores Hub coverage after sync;
 - stale runtime evidence is reported rather than silently trusted.
+- a Codex forbidden plugin is absent from `codex plugin list --json`;
+- Codex local MCP ownership is not mislabeled as account/plugin ownership;
+- the Cloudflare local MCP config contains no inline token or secret.
 
 The current runtime diagnostic behavior must also be audited so a disabled or
 tool-only MCP is not probed under the wrong Agent. Runtime checks consume the
@@ -321,6 +380,13 @@ same resolved ownership model as structural verification.
     `cloudflare-local` remains because its API endpoint is not an exact match.
 13. A disabled/tool-only MCP is not runtime-probed as if it were an active
     shared MCP.
+14. An enabled Codex plugin suppresses an exact Hub duplicate and is reported
+    as Codex plugin-owned.
+15. A cached but uninstalled Codex plugin does not suppress Hub distribution.
+16. A forbidden Codex plugin produces a Doctor policy finding.
+17. The current Cloudflare Codex state passes: no marketplace Cloudflare
+    plugin, local `cloudflare-local` enabled, URL-only local config, and no raw
+    token in the Hub.
 
 ## Acceptance Criteria
 
@@ -328,6 +394,8 @@ same resolved ownership model as structural verification.
 - Structural verification passes for all supported Agents.
 - A live Cursor sync reports the Cloudflare Skill as plugin-owned and leaves
   the broad `cloudflare-local` MCP available.
+- A live Codex check reports the Cloudflare marketplace plugin absent and the
+  local `cloudflare-local` MCP as local-only.
 - Disabling the test fixture's plugin restores Hub-managed capability without a
   manual policy change.
 - Doctor distinguishes active, stale, excluded, duplicate, and missing states.
