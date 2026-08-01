@@ -114,6 +114,31 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertEqual(malformed_policy["scope"], "policy")
         self.assertEqual(malformed_policy["owner"], "hub")
 
+    def test_non_utf8_policy_produces_stable_hub_owned_finding(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_bytes(b"\xff")
+
+        result = self.run_doctor(check=False)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        findings = json.loads(result.stdout)["findings"]
+        unreadable_policy = [
+            item for item in findings
+            if item["scope"] == "policy" and item["owner"] == "hub"
+        ]
+        self.assertEqual(
+            unreadable_policy,
+            [
+                {
+                    "severity": "attention",
+                    "message": "Tool scope policy could not be read.",
+                    "scope": "policy",
+                    "owner": "hub",
+                }
+            ],
+        )
+
     def test_runtime_failure_classification_is_target_specific(self):
         module = self.load_doctor_module()
 
@@ -1130,6 +1155,7 @@ class AgentDoctorTests(unittest.TestCase):
                     "mcp": {
                         "antigravity": {
                             "allowed_tool_only": ["legacy-native"],
+                            "required_tool_only": ["legacy-native"],
                         }
                     }
                 }
@@ -1143,20 +1169,23 @@ class AgentDoctorTests(unittest.TestCase):
                 {
                     "mcpServers": {
                         "shared": {"command": "/bin/sh"},
-                        "legacy-native": {"command": "/bin/sh"},
                     }
                 }
             ),
             encoding="utf-8",
         )
 
-        messages = "\n".join(
-            item["message"]
-            for item in json.loads(self.run_doctor().stdout)["findings"]
+        findings = json.loads(self.run_doctor().stdout)["findings"]
+        messages = "\n".join(item["message"] for item in findings)
+        legacy_missing = next(
+            item for item in findings
+            if "Required tool-only MCP missing from Gemini global" in item["message"]
         )
 
         self.assertNotIn("unsupported MCP tool: antigravity", messages)
         self.assertNotIn("Unexpected tool-only MCP in Gemini global", messages)
+        self.assertEqual(legacy_missing["scope"], "local")
+        self.assertEqual(legacy_missing["owner"], "gemini-global")
 
     def test_doctor_reports_invalid_tool_only_mcp_policy(self):
         policy = self.hub / "policies"

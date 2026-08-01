@@ -403,7 +403,7 @@ def plugin_scope_findings() -> list[dict[str, str]]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return []
     policies = data.get("plugins", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
@@ -609,7 +609,7 @@ def skill_dependency_findings() -> list[dict[str, str]]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return []
     policies = data.get("skills", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
@@ -728,7 +728,7 @@ def hook_scope_findings() -> list[dict[str, str]]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return []
     policies = data.get("hooks", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
@@ -855,7 +855,7 @@ def mcp_scope_findings() -> list[dict[str, str]]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return []
     policies = data.get("mcp", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
@@ -965,7 +965,7 @@ def mcp_scope_findings() -> list[dict[str, str]]:
                             f"{actual[name]}"
                         ),
                         scope="local",
-                        owner=tool,
+                        owner=inventory_tool,
                     )
                 )
         for name in sorted(set(required) - set(actual)):
@@ -976,7 +976,7 @@ def mcp_scope_findings() -> list[dict[str, str]]:
                         f"{required[name]}"
                     ),
                     scope="local",
-                    owner=tool,
+                    owner=inventory_tool,
                 )
             )
     return findings
