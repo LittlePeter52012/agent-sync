@@ -102,11 +102,9 @@ def _read_codex(path: Path) -> tuple[dict[str, Any], bool]:
 
 def _read_retired(hub: Path) -> set[str]:
     path = hub / "mcp" / "retired-servers.json"
-    if not path.exists():
-        return set()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return set()
     values = data.get("retiredServers", []) if isinstance(data, dict) else []
     return {str(value).lower() for value in values if isinstance(value, str)}

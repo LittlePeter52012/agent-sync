@@ -74,9 +74,7 @@ fi
 
 echo ""
 echo "[mcp]"
-if [ -e "$HUB_ROOT/mcp/shared-servers.json" ] \
-    || [ -L "$HUB_ROOT/mcp/shared-servers.json" ]; then
-    if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
+if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
 import sys
 from pathlib import Path
 
@@ -108,14 +106,11 @@ for target, label, _path, _bucket in _source_specs(home):
     failures += count != total
 sys.exit(failures)
 PY
-    then
-        :
-    else
-        rc=$?
-        FAIL=$((FAIL + rc))
-    fi
+then
+    :
 else
-    echo "  (no mcp/shared-servers.json — skip)"
+    rc=$?
+    FAIL=$((FAIL + rc))
 fi
 
 echo ""

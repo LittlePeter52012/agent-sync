@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import time
@@ -235,6 +236,68 @@ class VerifyScopeTests(unittest.TestCase):
                 )
                 self.assertNotIn(marker, output)
                 self.assertNotIn(str(shared), output)
+
+    def test_managed_doctor_sanitizes_unsearchable_canonical_parent(self):
+        mcp = self.hub / "mcp"
+        shared = mcp / "shared-servers.json"
+        marker = "PRIVATE-UNREADABLE-SHARED-CONTENT"
+        shared.write_text(
+            json.dumps({"mcpServers": {}, "comment": marker}),
+            encoding="utf-8",
+        )
+        original_mode = stat.S_IMODE(mcp.stat().st_mode)
+        os.chmod(mcp, 0)
+        try:
+            result = self.run_doctor("--strict", "--scope", "managed")
+        finally:
+            os.chmod(mcp, original_mode)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(result.stdout.lstrip().startswith("{"), result.stderr)
+        findings = [
+            item
+            for item in json.loads(result.stdout)["findings"]
+            if item["message"].startswith("Canonical shared MCP configuration")
+        ]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["scope"], "policy")
+        self.assertEqual(findings[0]["owner"], "hub")
+        output = result.stdout + result.stderr
+        self.assertNotIn("Traceback", output)
+        self.assertNotIn(marker, output)
+        self.assertNotIn(str(shared), output)
+
+    def test_structural_verify_sanitizes_unsearchable_canonical_parent(self):
+        mcp = self.hub / "mcp"
+        shared = mcp / "shared-servers.json"
+        marker = "PRIVATE-UNREADABLE-SHARED-CONTENT"
+        shared.write_text(
+            json.dumps({"mcpServers": {}, "comment": marker}),
+            encoding="utf-8",
+        )
+        original_mode = stat.S_IMODE(mcp.stat().st_mode)
+        os.chmod(mcp, 0)
+        try:
+            result = self.run_entrypoint(
+                "verify",
+                "--strict",
+                "--scope",
+                "managed",
+            )
+        finally:
+            os.chmod(mcp, original_mode)
+
+        self.assertNotEqual(result.returncode, 0)
+        output = result.stdout + result.stderr
+        self.assertEqual(
+            output.count(
+                "Canonical shared MCP configuration is invalid or unreadable."
+            ),
+            1,
+        )
+        self.assertNotIn("Traceback", output)
+        self.assertNotIn(marker, output)
+        self.assertNotIn(str(shared), output)
 
     def test_managed_scope_ignores_excluded_profile_same_name_executable(self):
         (self.hub / "mcp" / "shared-servers.json").write_text(
