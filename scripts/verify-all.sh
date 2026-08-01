@@ -122,7 +122,11 @@ from pathlib import Path
 
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
-from rule_blocks import top_level_managed_blocks
+from rule_blocks import (
+    build_managed_block,
+    parse_managed_blocks,
+    source_marker_issues,
+)
 
 home = Path.home()
 targets = (
@@ -133,20 +137,43 @@ targets = (
 failures = 0
 rules = sorted((hub / "rules").glob("*.md"))
 names = {rule.stem for rule in rules}
+rule_data = []
+invalid_sources = set()
 for rule in rules:
     with rule.open("r", encoding="utf-8", newline="") as handle:
         content = handle.read()
-    for label, target in targets:
+    rule_data.append((rule, content))
+    if source_marker_issues(rule.stem, content):
+        invalid_sources.add(rule.stem)
+        failures += 1
+        print(f"  ❌ structural rule error in source {rule.name}")
+for label, target in targets:
+    if target.exists():
+        with target.open("r", encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        parsed = parse_managed_blocks(text, names)
+        if parsed.issues:
+            failures += 1
+            print(f"  ❌ structural rule error in {label} target")
+            continue
+    else:
+        parsed = None
+    for rule, content in rule_data:
+        if rule.stem in invalid_sources:
+            continue
         ok = False
-        if target.exists():
-            with target.open("r", encoding="utf-8", newline="") as handle:
-                text = handle.read()
+        if parsed is not None:
             matching = [
                 block
-                for block in top_level_managed_blocks(text, names)
+                for block in parsed.blocks
                 if block.name == rule.stem
             ]
-            ok = len(matching) == 1 and content in matching[0].text
+            expected = build_managed_block(
+                rule.stem,
+                content,
+                include_priority=label != "Codex",
+            )
+            ok = len(matching) == 1 and matching[0].text == expected
         print(
             f"  {'✅' if ok else '❌'} {label} managed rule {rule.name}"
         )

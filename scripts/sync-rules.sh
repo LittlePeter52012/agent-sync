@@ -22,14 +22,17 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-from rule_blocks import top_level_managed_blocks
+from rule_blocks import (
+    MATH_PRIORITY,
+    build_managed_block,
+    has_terminal_newline,
+    parse_managed_blocks,
+    preferred_newline,
+    source_marker_issues,
+)
 
 rules_dir = Path(sys.argv[2])
 home = Path(sys.argv[3])
-priority = (
-    "> **路由优先级**：数学论文相关请求优先走下方 "
-    "[Math Router Rule]，不要先用通用 skill router。"
-)
 
 def read_raw(path):
     with path.open("r", encoding="utf-8", newline="") as handle:
@@ -39,20 +42,12 @@ def write_raw(path, text):
     with path.open("w", encoding="utf-8", newline="") as handle:
         handle.write(text)
 
-def preferred_newline(text):
-    match = re.search(r"\r\n|\n|\r", text)
-    return match.group(0) if match else "\n"
-
-def has_terminal_newline(text):
-    return text.endswith(("\r\n", "\n", "\r"))
-
-
 def trim_trailing_separator(value):
-    value = re.sub(r"(?:\r?\n[ \t]*)+$", "", value)
+    value = re.sub(r"(?:(?:\r\n|\n|\r)[ \t]*)+$", "", value)
     return value if value.strip() else ""
 
 def trim_leading_separator(value):
-    value = re.sub(r"^(?:[ \t]*\r?\n)+", "", value)
+    value = re.sub(r"^(?:[ \t]*(?:\r\n|\n|\r))+", "", value)
     return value if value.strip() else ""
 
 def join_without_fragment(before, after):
@@ -74,66 +69,94 @@ rules = [
 ]
 names = {name for name, _rule in rules}
 
-def build_block(name, rule, include_priority):
-    newline = preferred_newline(rule)
-    block = f"<!-- agent-sync:begin:{name} -->{newline}"
-    if include_priority and name == "math-router-rule":
-        block += priority + newline + newline
-    block += rule
-    if not has_terminal_newline(block):
-        block += newline
-    return block + f"<!-- agent-sync:end:{name} -->"
+if not rules:
+    raise SystemExit(0)
 
-def sync_aggregate(target, include_priority):
+target_specs = (
+    (home / ".claude" / "CLAUDE.md", True),
+    (home / ".codex" / "AGENTS.md", False),
+    (home / ".gemini" / "GEMINI.md", True),
+)
+target_inputs = {}
+source_issues = [
+    issue
+    for name, rule in rules
+    for issue in source_marker_issues(name, rule)
+]
+structural_error = bool(source_issues)
+for target, _include_priority in target_specs:
     if not target.is_file():
-        print(f"[rules] skip missing: {target}")
-        return
+        target_inputs[target] = None
+        continue
     original = read_raw(target)
+    parsed = parse_managed_blocks(original, names)
+    structural_error = structural_error or bool(parsed.issues)
+    target_inputs[target] = (original, parsed)
+
+if structural_error:
+    print(
+        "ERROR: rule synchronization structural preflight failed; "
+        "no files changed.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+legacy_candidates = set()
+for _name, rule in rules:
+    for candidate in (rule, rule.replace("\r\n", "\n").replace("\r", "\n")):
+        candidate = candidate.strip(" \t\r\n")
+        if candidate:
+            legacy_candidates.add(candidate)
+legacy_candidates = sorted(
+    legacy_candidates,
+    key=lambda value: (-len(value.encode("utf-8")), value),
+)
+
+outputs = []
+for target, include_priority in target_specs:
+    target_input = target_inputs[target]
+    if target_input is None:
+        continue
+    original, parsed = target_input
     text = original
-    for managed in reversed(top_level_managed_blocks(original, names)):
+    for managed in reversed(parsed.blocks):
         text = join_without_fragment(
             text[:managed.start],
             text[managed.end:],
         )
-    for _name, rule in rules:
-        legacy_rule = rule.strip(" \t\r\n")
-        if legacy_rule:
-            text = remove_matches(text, re.compile(re.escape(legacy_rule)))
-    if include_priority:
-        text = remove_matches(text, re.compile(re.escape(priority)))
+    for candidate in legacy_candidates:
+        text = remove_matches(text, re.compile(re.escape(candidate)))
+    if include_priority and "math-router-rule" in names:
+        text = remove_matches(text, re.compile(re.escape(MATH_PRIORITY)))
     text = trim_trailing_separator(text)
     blocks = [
-        build_block(name, rule, include_priority)
+        build_managed_block(name, rule, include_priority)
         for name, rule in rules
     ]
-    if blocks:
-        if text:
-            text += preferred_newline(text) * 2
-        text += "\n\n".join(blocks) + "\n"
-    write_raw(target, text)
-    print(f"  ✓ injected → {target}")
+    if text:
+        text += preferred_newline(text) * 2
+    text += "\n\n".join(blocks) + "\n"
+    outputs.append((target, text))
 
-for target, include_priority in (
-    (home / ".claude" / "CLAUDE.md", True),
-    (home / ".codex" / "AGENTS.md", False),
-    (home / ".gemini" / "GEMINI.md", True),
-):
-    sync_aggregate(target, include_priority)
-
-if rules:
-    copilot_dir = home / ".copilot" / "instructions"
-    copilot_dir.mkdir(parents=True, exist_ok=True)
-    for name, rule in rules:
-        target = copilot_dir / f"{name}.instructions.md"
-        body = f"""---
+copilot_dir = home / ".copilot" / "instructions"
+for name, rule in rules:
+    target = copilot_dir / f"{name}.instructions.md"
+    body = f"""---
 name: {json.dumps(name, ensure_ascii=False)}
 description: Agent rule synced by agent-sync from personal hub.
 applyTo: "**"
 ---
 
 """ + rule
-        if not has_terminal_newline(body):
-            body += preferred_newline(rule)
-        write_raw(target, body)
-        print(f"  ✓ injected → {target}")
+    if not has_terminal_newline(body):
+        body += preferred_newline(rule)
+    outputs.append((target, body))
+
+copilot_dir.mkdir(parents=True, exist_ok=True)
+for target, text in outputs:
+    write_raw(target, text)
+    print(f"  ✓ injected → {target}")
+for target, _include_priority in target_specs:
+    if target_inputs[target] is None:
+        print(f"[rules] skip missing: {target}")
 PY

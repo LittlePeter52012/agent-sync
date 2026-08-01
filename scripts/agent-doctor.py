@@ -22,7 +22,11 @@ from config_inventory import (
     read_canonical_shared_mcp,
     resolve_mcp_coverage,
 )
-from rule_blocks import top_level_managed_blocks
+from rule_blocks import (
+    build_managed_block,
+    parse_managed_blocks,
+    source_marker_issues,
+)
 from sync_hermes import is_registered as hermes_skills_registered
 
 
@@ -1513,11 +1517,46 @@ def rule_findings() -> list[dict[str, str]]:
         else []
     )
     names = {rule.stem for rule in rules}
+    rule_data: list[tuple[Path, str]] = []
+    invalid_sources: set[str] = set()
     for rule in rules:
         with rule.open("r", encoding="utf-8", newline="") as handle:
             content = handle.read()
+        rule_data.append((rule, content))
+        if source_marker_issues(rule.stem, content):
+            invalid_sources.add(rule.stem)
+            findings.append(
+                make_finding(
+                    f"Structural synced-rule error in source {rule.name}.",
+                    scope="managed",
+                    owner="hub",
+                )
+            )
+    target_parses = {}
+    invalid_targets: set[Path] = set()
+    for target in targets:
+        if not target.exists():
+            target_parses[target] = None
+            continue
+        with target.open("r", encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        parsed = parse_managed_blocks(text, names)
+        target_parses[target] = parsed
+        if parsed.issues:
+            invalid_targets.add(target)
+            findings.append(
+                make_finding(
+                    f"Structural synced-rule error in {target.name}.",
+                    scope="managed",
+                    owner="hub",
+                )
+            )
+    for rule, content in rule_data:
+        if rule.stem in invalid_sources:
+            continue
         for target in targets:
-            if not target.exists():
+            parsed = target_parses[target]
+            if parsed is None:
                 findings.append(
                     make_finding(
                         f"Missing rule target {target.name}: {rule.name}",
@@ -1526,11 +1565,11 @@ def rule_findings() -> list[dict[str, str]]:
                     )
                 )
                 continue
-            with target.open("r", encoding="utf-8", newline="") as handle:
-                text = handle.read()
+            if target in invalid_targets:
+                continue
             matching = [
                 block
-                for block in top_level_managed_blocks(text, names)
+                for block in parsed.blocks
                 if block.name == rule.stem
             ]
             if len(matching) != 1:
@@ -1542,7 +1581,12 @@ def rule_findings() -> list[dict[str, str]]:
                     )
                 )
                 continue
-            if content not in matching[0].text:
+            expected = build_managed_block(
+                rule.stem,
+                content,
+                include_priority=target.name != "AGENTS.md",
+            )
+            if matching[0].text != expected:
                 findings.append(
                     make_finding(
                         f"Drifted synced rule in {target.name}: {rule.name}",

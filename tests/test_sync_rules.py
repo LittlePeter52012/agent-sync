@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.rule_blocks import top_level_managed_blocks
+from scripts import rule_blocks
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -58,7 +58,7 @@ class SyncRulesTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
 
-    def run_sync(self):
+    def run_sync(self, check=True):
         return subprocess.run(
             ["bash", str(SYNC_RULES)],
             cwd=self.root,
@@ -69,13 +69,28 @@ class SyncRulesTests(unittest.TestCase):
             },
             text=True,
             capture_output=True,
-            check=True,
+            check=check,
         )
 
     def aggregate_bytes(self):
         return {
             relative: (self.home / relative).read_bytes()
             for relative in AGGREGATE_TARGETS
+        }
+
+    def output_snapshot(self):
+        paths = [self.home / relative for relative in AGGREGATE_TARGETS]
+        paths.extend(
+            sorted(
+                (self.home / ".copilot" / "instructions").glob(
+                    "*.instructions.md"
+                )
+            )
+        )
+        return {
+            str(path): (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in paths
+            if path.exists()
         }
 
     def test_aggregate_rules_are_byte_idempotent_for_empty_targets(self):
@@ -191,6 +206,9 @@ class SyncRulesTests(unittest.TestCase):
             "<!-- agent-sync:begin:beta -->\n"
             "literal foreign marker body\n"
             "<!-- agent-sync:end:beta -->\n"
+            "<!-- agent-sync:begin:unknown -->\n"
+            "literal unknown marker body\n"
+            "<!-- agent-sync:end:unknown -->\n"
         )
         beta = "[Beta]\nShared body"
         (self.rules / "alpha.md").write_text(alpha, encoding="utf-8")
@@ -206,13 +224,20 @@ class SyncRulesTests(unittest.TestCase):
             with self.subTest(target=relative):
                 self.assertIn(alpha.encode("utf-8"), data)
                 self.assertIn(beta.encode("utf-8"), data)
-                logical = top_level_managed_blocks(
+                logical = rule_blocks.parse_managed_blocks(
                     data.decode("utf-8"),
                     {"alpha", "beta"},
-                )
+                ).blocks
                 self.assertEqual(
                     [block.name for block in logical],
                     ["alpha", "beta"],
+                )
+                self.assertEqual(
+                    rule_blocks.parse_managed_blocks(
+                        data.decode("utf-8"),
+                        {"alpha", "beta"},
+                    ).issues,
+                    [],
                 )
                 self.assertEqual(
                     data.count(
@@ -319,6 +344,253 @@ class SyncRulesTests(unittest.TestCase):
                 "applyTo": '"**"',
             },
         )
+
+    def test_structural_preflight_fails_closed_without_any_output_write(self):
+        self.initialize_aggregate_targets("")
+        self.run_sync()
+        valid_alpha = (self.rules / "alpha.md").read_text(encoding="utf-8")
+        invalid_source = (
+            "[Alpha]\n"
+            "<!-- agent-sync:begin:alpha -->\n"
+            "ambiguous own marker\n"
+            "<!-- agent-sync:end:alpha -->\n"
+        )
+        (self.rules / "alpha.md").write_text(invalid_source, encoding="utf-8")
+        before = self.output_snapshot()
+
+        result = self.run_sync(check=False)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stderr,
+            "ERROR: rule synchronization structural preflight failed; "
+            "no files changed.\n",
+        )
+        self.assertEqual(self.output_snapshot(), before)
+        source_issues = rule_blocks.source_marker_issues(
+            "alpha",
+            invalid_source,
+        )
+        self.assertEqual(
+            {issue.kind for issue in source_issues},
+            {"source-own-marker"},
+        )
+
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+        }
+        verify = subprocess.run(
+            ["bash", str(VERIFY_ALL)],
+            cwd=self.root,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(verify.returncode, 0)
+        self.assertIn("structural rule error", verify.stdout)
+        doctor = subprocess.run(
+            ["python3", str(DOCTOR), "--json"],
+            cwd=self.root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        messages = "\n".join(
+            finding["message"]
+            for finding in json.loads(doctor.stdout)["findings"]
+        )
+        self.assertIn("Structural synced-rule error", messages)
+
+        (self.rules / "alpha.md").write_text(valid_alpha, encoding="utf-8")
+        malformed = {
+            "ambiguous-begin": (
+                "HEAD\n"
+                "<!-- agent-sync:begin:alpha -->\n"
+                "<!-- agent-sync:begin:alpha -->\n"
+                "<!-- agent-sync:end:alpha -->\n"
+            ),
+            "unclosed-begin": (
+                "HEAD\n<!-- agent-sync:begin:alpha -->\nTAIL\n"
+            ),
+            "stray-end": "HEAD\n<!-- agent-sync:end:alpha -->\nTAIL\n",
+        }
+        codex = self.home / ".codex" / "AGENTS.md"
+        expected_issue = {
+            "ambiguous-begin": "ambiguous-begin",
+            "unclosed-begin": "unclosed-begin",
+            "stray-end": "stray-end",
+        }
+        for case, text in malformed.items():
+            with self.subTest(case=case):
+                codex.write_text(text, encoding="utf-8")
+                parsed = rule_blocks.parse_managed_blocks(
+                    text,
+                    {"alpha", "beta"},
+                )
+                self.assertEqual(
+                    {issue.kind for issue in parsed.issues},
+                    {expected_issue[case]},
+                )
+                before = self.output_snapshot()
+                result = self.run_sync(check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.output_snapshot(), before)
+                verify = subprocess.run(
+                    ["bash", str(VERIFY_ALL)],
+                    cwd=self.root,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(verify.returncode, 0)
+                self.assertIn("structural rule error", verify.stdout)
+                doctor = subprocess.run(
+                    ["python3", str(DOCTOR), "--json"],
+                    cwd=self.root,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                messages = "\n".join(
+                    finding["message"]
+                    for finding in json.loads(doctor.stdout)["findings"]
+                )
+                self.assertIn(
+                    "Structural synced-rule error in AGENTS.md",
+                    messages,
+                )
+
+    def test_verify_and_doctor_require_exact_managed_block_content(self):
+        self.initialize_aggregate_targets("")
+        self.run_sync()
+        codex = self.home / ".codex" / "AGENTS.md"
+        text = codex.read_text(encoding="utf-8")
+        source = self.rule_text["alpha"]
+        codex.write_text(
+            text.replace(source, f"EXTRA BEFORE\n{source}\nEXTRA AFTER", 1),
+            encoding="utf-8",
+        )
+        env = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+        }
+
+        verify = subprocess.run(
+            ["bash", str(VERIFY_ALL)],
+            cwd=self.root,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        doctor = subprocess.run(
+            ["python3", str(DOCTOR), "--json"],
+            cwd=self.root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        self.assertNotEqual(verify.returncode, 0)
+        messages = "\n".join(
+            finding["message"]
+            for finding in json.loads(doctor.stdout)["findings"]
+        )
+        self.assertIn("Drifted synced rule in AGENTS.md", messages)
+
+    def test_legacy_cleanup_is_longest_first_and_removes_lf_history(self):
+        rule_data = {
+            "alpha": b"INNER",
+            "beta": b"PREFIX\nINNER\nSUFFIX",
+            "delta": b"MIX\r\nA\nB\rC",
+            "gamma": b"CRLF\r\nBODY",
+        }
+        for path in self.rules.glob("*.md"):
+            path.unlink()
+        for name, data in rule_data.items():
+            (self.rules / f"{name}.md").write_bytes(data)
+        legacy = (
+            b"KEEP\n\n"
+            b"PREFIX\nINNER\nSUFFIX\n\n"
+            b"MIX\r\nA\nB\rC\n\n"
+            b"MIX\nA\nB\nC\n\n"
+            b"CRLF\r\nBODY\n\n"
+            b"CRLF\nBODY\n"
+        )
+        self.initialize_aggregate_target_bytes(legacy)
+
+        self.run_sync()
+        first = self.aggregate_bytes()
+        self.run_sync()
+
+        self.assertEqual(self.aggregate_bytes(), first)
+        for relative, data in first.items():
+            with self.subTest(target=relative):
+                parsed = rule_blocks.parse_managed_blocks(
+                    data.decode("utf-8"),
+                    set(rule_data),
+                )
+                unmanaged = data[: parsed.blocks[0].start]
+                self.assertEqual(unmanaged, b"KEEP\n\n")
+                self.assertEqual(
+                    [block.name for block in parsed.blocks],
+                    sorted(rule_data),
+                )
+
+    def test_empty_rules_are_noop_and_absent_math_keeps_priority_prose(self):
+        for path in self.rules.glob("*.md"):
+            path.unlink()
+        self.initialize_aggregate_target_bytes(b"USER\r\n\r\n")
+        copilot = self.home / ".copilot" / "instructions"
+        copilot.mkdir(parents=True)
+        (copilot / "user.instructions.md").write_bytes(b"USER COPILOT\r\n")
+        before = self.output_snapshot()
+
+        self.run_sync()
+
+        self.assertEqual(self.output_snapshot(), before)
+
+        (self.rules / "alpha.md").write_text("[Alpha]\n", encoding="utf-8")
+        priority = (
+            "> **路由优先级**：数学论文相关请求优先走下方 "
+            "[Math Router Rule]，不要先用通用 skill router。"
+        )
+        self.initialize_aggregate_targets(f"USER\n\n{priority}\n")
+        self.run_sync()
+        first = self.aggregate_bytes()
+        self.run_sync()
+        self.assertEqual(self.aggregate_bytes(), first)
+        for data in first.values():
+            self.assertIn(priority.encode("utf-8"), data)
+
+    def test_lone_cr_sources_and_separators_are_byte_idempotent(self):
+        for path in self.rules.glob("*.md"):
+            path.unlink()
+        rule = b"[Alpha]\rLone CR body\r"
+        (self.rules / "alpha.md").write_bytes(rule)
+        unmanaged = b"USER\rTEXT\r\r"
+        self.initialize_aggregate_target_bytes(unmanaged)
+
+        self.run_sync()
+        first = self.aggregate_bytes()
+        copilot = (
+            self.home
+            / ".copilot"
+            / "instructions"
+            / "alpha.instructions.md"
+        )
+        first_copilot = copilot.read_bytes()
+        self.run_sync()
+
+        self.assertEqual(self.aggregate_bytes(), first)
+        self.assertEqual(copilot.read_bytes(), first_copilot)
+        self.assertIn(rule, first_copilot)
+        for data in first.values():
+            self.assertTrue(data.startswith(unmanaged))
+            self.assertIn(rule, data)
 
 
 if __name__ == "__main__":
