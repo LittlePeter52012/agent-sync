@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.11.0 — 2026-08-01
+
+- Add guarded MCP dependency maintenance: `deps check` reports package-registry
+  status, `deps pin` makes an explicit, registry-validated exact-pin update,
+  and `deps smoke` runs a bounded launcher probe.
+- Separate the Copilot Skill policy key from the VS Code MCP policy key in
+  coverage and Doctor output, without changing account or authentication state.
+- Match plugin-provided MCP capabilities by normalized transport identity, so a
+  same-name, different-transport server is reported as a collision instead of
+  suppressing the Hub-managed server.
+- Add managed verification scope so strict verification isolates broken shared
+  MCP configuration from unrelated local drift.
+
 ## 1.10.1 — 2026-07-28
 
 - Make the full evaluation suite count enabled local Cursor plugin MCP servers
