@@ -7,35 +7,45 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 RULES_DIR="$HUB_ROOT/rules"
-MARKER_DEFAULT="[Agent Sync Rule]"
 
 if [ ! -d "$RULES_DIR" ]; then
     echo "[rules] no rules/ directory in hub — skip"
     exit 0
 fi
 
-inject_rule_file() {
-    local rule_file="$1"
-    local target="$2"
-    local marker="$3"
-    local priority_note="${4:-}"
+echo "━━━ agent-sync rules sync ━━━"
 
-    [ -f "$target" ] || { echo "[rules] skip missing: $target"; return; }
-    [ -f "$rule_file" ] || return
-
-    python3 - "$target" "$rule_file" "$marker" "$priority_note" <<'PY'
-import re, sys
+python3 - "$SCRIPT_DIR" "$RULES_DIR" "$HOME" <<'PY'
+import json
+import re
+import sys
 from pathlib import Path
 
-target = Path(sys.argv[1])
-rule_path = Path(sys.argv[2])
-priority = sys.argv[4]
-block_name = rule_path.stem
-begin = f"<!-- agent-sync:begin:{block_name} -->"
-end = f"<!-- agent-sync:end:{block_name} -->"
+sys.path.insert(0, sys.argv[1])
+from rule_blocks import top_level_managed_blocks
 
-text = target.read_text(encoding="utf-8")
-rule = rule_path.read_text(encoding="utf-8")
+rules_dir = Path(sys.argv[2])
+home = Path(sys.argv[3])
+priority = (
+    "> **路由优先级**：数学论文相关请求优先走下方 "
+    "[Math Router Rule]，不要先用通用 skill router。"
+)
+
+def read_raw(path):
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+def write_raw(path, text):
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+def preferred_newline(text):
+    match = re.search(r"\r\n|\n|\r", text)
+    return match.group(0) if match else "\n"
+
+def has_terminal_newline(text):
+    return text.endswith(("\r\n", "\n", "\r"))
+
 
 def trim_trailing_separator(value):
     value = re.sub(r"(?:\r?\n[ \t]*)+$", "", value)
@@ -58,73 +68,72 @@ def remove_matches(value, pattern):
         )
     return value
 
-# Remove any previous managed block first. The filename-based marker is stable
-# even if the heading inside a rule later changes.
-text = remove_matches(
-    text,
-    re.compile(rf"{re.escape(begin)}.*?{re.escape(end)}", flags=re.DOTALL),
-)
-# Remove legacy unmarked copies written by releases before managed markers.
-legacy_rule = rule.strip()
-if legacy_rule:
-    text = remove_matches(text, re.compile(re.escape(legacy_rule)))
-if priority:
-    text = remove_matches(text, re.compile(re.escape(priority.strip())))
-text = trim_trailing_separator(text)
-block = f"{begin}\n"
-if priority:
-    block += f"{priority.strip()}\n\n"
-block += rule
-if not block.endswith("\n"):
-    block += "\n"
-block += end
-text = f"{text}\n\n{block}\n" if text else f"{block}\n"
-target.write_text(text, encoding="utf-8")
-print(f"  ✓ injected → {target}")
-PY
-}
+rules = [
+    (path.stem, read_raw(path))
+    for path in sorted(rules_dir.glob("*.md"))
+]
+names = {name for name, _rule in rules}
 
-echo "━━━ agent-sync rules sync ━━━"
+def build_block(name, rule, include_priority):
+    newline = preferred_newline(rule)
+    block = f"<!-- agent-sync:begin:{name} -->{newline}"
+    if include_priority and name == "math-router-rule":
+        block += priority + newline + newline
+    block += rule
+    if not has_terminal_newline(block):
+        block += newline
+    return block + f"<!-- agent-sync:end:{name} -->"
 
-# Prefer math-router-rule.md marker for backward compatibility
-for rule_file in "$RULES_DIR"/*.md; do
-    [ -f "$rule_file" ] || continue
-    base=$(basename "$rule_file")
-    if [ "$base" = "math-router-rule.md" ]; then
-        marker="[Math Router Rule]"
-    else
-        marker="[Agent Sync Rule: ${base%.md}]"
-    fi
+def sync_aggregate(target, include_priority):
+    if not target.is_file():
+        print(f"[rules] skip missing: {target}")
+        return
+    original = read_raw(target)
+    text = original
+    for managed in reversed(top_level_managed_blocks(original, names)):
+        text = join_without_fragment(
+            text[:managed.start],
+            text[managed.end:],
+        )
+    for _name, rule in rules:
+        legacy_rule = rule.strip(" \t\r\n")
+        if legacy_rule:
+            text = remove_matches(text, re.compile(re.escape(legacy_rule)))
+    if include_priority:
+        text = remove_matches(text, re.compile(re.escape(priority)))
+    text = trim_trailing_separator(text)
+    blocks = [
+        build_block(name, rule, include_priority)
+        for name, rule in rules
+    ]
+    if blocks:
+        if text:
+            text += preferred_newline(text) * 2
+        text += "\n\n".join(blocks) + "\n"
+    write_raw(target, text)
+    print(f"  ✓ injected → {target}")
 
-    PRIORITY=""
-    if [ "$base" = "math-router-rule.md" ]; then
-        PRIORITY='> **路由优先级**：数学论文相关请求优先走下方 [Math Router Rule]，不要先用通用 skill router。'
-    fi
+for target, include_priority in (
+    (home / ".claude" / "CLAUDE.md", True),
+    (home / ".codex" / "AGENTS.md", False),
+    (home / ".gemini" / "GEMINI.md", True),
+):
+    sync_aggregate(target, include_priority)
 
-    inject_rule_file "$rule_file" "$HOME/.claude/CLAUDE.md" "$marker" "$PRIORITY"
-    inject_rule_file "$rule_file" "$HOME/.codex/AGENTS.md" "$marker" ""
-    inject_rule_file "$rule_file" "$HOME/.gemini/GEMINI.md" "$marker" "$PRIORITY"
-
-    # Copilot instructions
-    COPILOT_DIR="$HOME/.copilot/instructions"
-    mkdir -p "$COPILOT_DIR"
-    name="${base%.md}"
-    python3 - "$COPILOT_DIR/${name}.instructions.md" "$rule_file" "$name" <<'PY'
-from pathlib import Path
-import sys
-target = Path(sys.argv[1])
-rule = Path(sys.argv[2]).read_text(encoding="utf-8")
-name = sys.argv[3]
-body = f"""---
-name: {name}
+if rules:
+    copilot_dir = home / ".copilot" / "instructions"
+    copilot_dir.mkdir(parents=True, exist_ok=True)
+    for name, rule in rules:
+        target = copilot_dir / f"{name}.instructions.md"
+        body = f"""---
+name: {json.dumps(name, ensure_ascii=False)}
 description: Agent rule synced by agent-sync from personal hub.
 applyTo: "**"
 ---
 
 """ + rule
-if not body.endswith("\n"):
-    body += "\n"
-target.write_text(body, encoding="utf-8")
-print(f"  ✓ injected → {target}")
+        if not has_terminal_newline(body):
+            body += preferred_newline(rule)
+        write_raw(target, body)
+        print(f"  ✓ injected → {target}")
 PY
-done

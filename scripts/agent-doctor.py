@@ -22,6 +22,7 @@ from config_inventory import (
     read_canonical_shared_mcp,
     resolve_mcp_coverage,
 )
+from rule_blocks import top_level_managed_blocks
 from sync_hermes import is_registered as hermes_skills_registered
 
 
@@ -1506,10 +1507,15 @@ def rule_findings() -> list[dict[str, str]]:
         HOME / ".claude" / "CLAUDE.md",
         HOME / ".gemini" / "GEMINI.md",
     ]
-    for rule in sorted((HUB / "rules").glob("*.md")) if (HUB / "rules").exists() else []:
-        content = rule.read_text(encoding="utf-8").strip()
-        begin = f"<!-- agent-sync:begin:{rule.stem} -->"
-        end = f"<!-- agent-sync:end:{rule.stem} -->"
+    rules = (
+        sorted((HUB / "rules").glob("*.md"))
+        if (HUB / "rules").exists()
+        else []
+    )
+    names = {rule.stem for rule in rules}
+    for rule in rules:
+        with rule.open("r", encoding="utf-8", newline="") as handle:
+            content = handle.read()
         for target in targets:
             if not target.exists():
                 findings.append(
@@ -1520,8 +1526,14 @@ def rule_findings() -> list[dict[str, str]]:
                     )
                 )
                 continue
-            text = target.read_text(encoding="utf-8")
-            if text.count(begin) != 1 or text.count(end) != 1:
+            with target.open("r", encoding="utf-8", newline="") as handle:
+                text = handle.read()
+            matching = [
+                block
+                for block in top_level_managed_blocks(text, names)
+                if block.name == rule.stem
+            ]
+            if len(matching) != 1:
                 findings.append(
                     make_finding(
                         f"Missing or duplicate synced rule in {target.name}: {rule.name}",
@@ -1530,8 +1542,7 @@ def rule_findings() -> list[dict[str, str]]:
                     )
                 )
                 continue
-            block = text.split(begin, 1)[1].split(end, 1)[0]
-            if content not in block:
+            if content not in matching[0].text:
                 findings.append(
                     make_finding(
                         f"Drifted synced rule in {target.name}: {rule.name}",

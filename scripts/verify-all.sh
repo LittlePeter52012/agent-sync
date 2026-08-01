@@ -116,11 +116,14 @@ fi
 echo ""
 echo "[rules]"
 if [ -d "$HUB_ROOT/rules" ] && ls "$HUB_ROOT/rules"/*.md >/dev/null 2>&1; then
-    if "$PY" - "$HUB_ROOT" <<'PY'
+    if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
 import sys
 from pathlib import Path
 
 hub = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+from rule_blocks import top_level_managed_blocks
+
 home = Path.home()
 targets = (
     ("Claude", home / ".claude" / "CLAUDE.md"),
@@ -128,17 +131,22 @@ targets = (
     ("Gemini", home / ".gemini" / "GEMINI.md"),
 )
 failures = 0
-for rule in sorted((hub / "rules").glob("*.md")):
-    content = rule.read_text(encoding="utf-8").strip()
-    begin = f"<!-- agent-sync:begin:{rule.stem} -->"
-    end = f"<!-- agent-sync:end:{rule.stem} -->"
+rules = sorted((hub / "rules").glob("*.md"))
+names = {rule.stem for rule in rules}
+for rule in rules:
+    with rule.open("r", encoding="utf-8", newline="") as handle:
+        content = handle.read()
     for label, target in targets:
         ok = False
         if target.exists():
-            text = target.read_text(encoding="utf-8")
-            if text.count(begin) == 1 and text.count(end) == 1:
-                block = text.split(begin, 1)[1].split(end, 1)[0]
-                ok = content in block
+            with target.open("r", encoding="utf-8", newline="") as handle:
+                text = handle.read()
+            matching = [
+                block
+                for block in top_level_managed_blocks(text, names)
+                if block.name == rule.stem
+            ]
+            ok = len(matching) == 1 and content in matching[0].text
         print(
             f"  {'✅' if ok else '❌'} {label} managed rule {rule.name}"
         )
