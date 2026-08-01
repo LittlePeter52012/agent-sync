@@ -893,7 +893,9 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("retire-me", cursor)
 
     def test_sync_uses_cursor_plugin_for_shared_mcp(self):
-        self.write_cursor_plugin({"shared": {"command": "plugin-command"}})
+        self.write_cursor_plugin(
+            {"shared": {"command": "old-command", "args": ["--old"]}}
+        )
         cursor_path = self.home / ".cursor" / "mcp.json"
         cursor_path.parent.mkdir(parents=True, exist_ok=True)
         cursor_path.write_text(
@@ -996,8 +998,8 @@ class PromoteMcpTests(unittest.TestCase):
         cursor_path.write_text(json.dumps(cursor), encoding="utf-8")
         self.write_cursor_plugin(
             {
-                "shared": {"command": "plugin-command"},
-                "retire-me": {"command": "plugin-retired-command"},
+                "shared": {"command": "old-command", "args": ["--old"]},
+                "retire-me": {"command": "retired-command"},
             }
         )
 
