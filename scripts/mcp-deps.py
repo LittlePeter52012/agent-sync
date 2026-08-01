@@ -27,8 +27,10 @@ class DependencyError(ValueError):
     pass
 
 
-def _malformed(server: str, argument: object) -> DependencyError:
-    return DependencyError(f"{server}: malformed MCP dependency argument {argument!r}")
+def _malformed(server: str, launcher: str) -> DependencyError:
+    return DependencyError(
+        f"{server}: invalid {launcher} dependency argument at position 0"
+    )
 
 
 def _valid_package(package: str, pattern: re.Pattern[str]) -> bool:
@@ -37,7 +39,7 @@ def _valid_package(package: str, pattern: re.Pattern[str]) -> bool:
 
 def _parse_npm(server: str, argument: object) -> DependencySpec:
     if not isinstance(argument, str) or argument.startswith("-"):
-        raise _malformed(server, argument)
+        raise _malformed(server, "npx")
 
     if argument.startswith("@"):
         version_separator = argument.rfind("@")
@@ -51,7 +53,7 @@ def _parse_npm(server: str, argument: object) -> DependencySpec:
         package, version = argument, None
 
     if not _valid_package(package, _NPM_PACKAGE):
-        raise _malformed(server, argument)
+        raise _malformed(server, "npx")
     if version is None:
         pin_state = "unversioned"
     elif version == "latest":
@@ -60,22 +62,22 @@ def _parse_npm(server: str, argument: object) -> DependencySpec:
     elif _NUMERIC_VERSION.fullmatch(version):
         pin_state = "exact"
     else:
-        raise _malformed(server, argument)
+        raise _malformed(server, "npx")
     return DependencySpec(server, "npm", package, version, pin_state, 0)
 
 
 def _parse_pypi(server: str, argument: object) -> DependencySpec:
     if not isinstance(argument, str) or argument.startswith("-"):
-        raise _malformed(server, argument)
+        raise _malformed(server, "uvx")
 
     if "==" not in argument:
         if not _valid_package(argument, _PYPI_PACKAGE):
-            raise _malformed(server, argument)
+            raise _malformed(server, "uvx")
         return DependencySpec(server, "pypi", argument, None, "unversioned", 0)
 
     package, version = argument.split("==", 1)
     if not _valid_package(package, _PYPI_PACKAGE) or not _NUMERIC_VERSION.fullmatch(version):
-        raise _malformed(server, argument)
+        raise _malformed(server, "uvx")
     return DependencySpec(server, "pypi", package, version, "exact", 0)
 
 
@@ -95,7 +97,7 @@ def discover_dependencies(hub: Path) -> list[DependencySpec]:
 
         args = config.get("args", [])
         if not isinstance(args, list) or not args:
-            raise _malformed(server, None)
+            raise _malformed(server, launcher)
         parser = _parse_npm if launcher == "npx" else _parse_pypi
         dependencies.append(parser(server, args[0]))
 

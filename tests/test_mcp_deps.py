@@ -105,6 +105,24 @@ class McpDependencyTests(unittest.TestCase):
                 with self.assertRaises(DependencyError):
                     discover_dependencies(self.hub)
 
+    def test_redacts_malformed_dependency_arguments(self):
+        for command, argument in (
+            ("npx", "--token=ghp_9f70b1ee05a34d9b8c2f"),
+            ("uvx", "mcp-tool==1.0.0-${PYPI_PRIVATE_TOKEN}"),
+        ):
+            with self.subTest(command=command):
+                self.write_config({"private-server": {"command": command, "args": [argument]}})
+
+                with self.assertRaises(DependencyError) as raised:
+                    discover_dependencies(self.hub)
+
+                message = str(raised.exception)
+                self.assertNotIn(argument, message)
+                self.assertEqual(
+                    message,
+                    f"private-server: invalid {command} dependency argument at position 0",
+                )
+
     def test_ignores_local_executables(self):
         self.write_config({"local": {"command": "/bin/local", "args": ["--version"]}})
 
