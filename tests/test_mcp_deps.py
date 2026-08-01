@@ -3,6 +3,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -48,11 +49,6 @@ class McpDependencyTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.hub = Path(self.temp_dir.name)
         self.shared_path = self.hub / "mcp" / "shared-servers.json"
-        self.xattr_guard = mock.patch.object(
-            MCP_DEPS, "_has_xattrs", return_value=False
-        )
-        self.xattr_guard.start()
-        self.addCleanup(self.xattr_guard.stop)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -236,7 +232,9 @@ class McpDependencyTests(unittest.TestCase):
         )
         before = self.shared_path.read_bytes()
 
-        with mock.patch.object(MCP_DEPS, "_has_xattrs", return_value=True):
+        with mock.patch.object(
+            MCP_DEPS.os, "listxattr", return_value=["user.untrusted"], create=True
+        ):
             with self.assertRaisesRegex(
                 DependencyError, "MCP dependency config has unsupported metadata"
             ):
@@ -249,6 +247,61 @@ class McpDependencyTests(unittest.TestCase):
                 )
 
         self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_native_xattr_detector_allows_only_provenance(self):
+        with mock.patch.object(
+            MCP_DEPS.os,
+            "listxattr",
+            return_value=["com.apple.provenance"],
+            create=True,
+        ):
+            self.assertFalse(MCP_DEPS._has_xattrs(self.shared_path))
+        with mock.patch.object(
+            MCP_DEPS.os,
+            "listxattr",
+            return_value=["com.apple.provenance", "user.untrusted"],
+            create=True,
+        ):
+            self.assertTrue(MCP_DEPS._has_xattrs(self.shared_path))
+
+    def test_pin_allows_only_provenance_xattr_in_darwin_production_detector(self):
+        if sys.platform != "darwin":
+            self.skipTest("requires the Darwin xattr detector")
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+        names = subprocess.run(
+            ["/usr/bin/xattr", str(self.shared_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout.decode("utf-8").splitlines()
+        if set(names) != {"com.apple.provenance"}:
+            self.skipTest("temporary file does not carry only provenance")
+        before = self.shared_path.read_bytes()
+
+        proposed = MCP_DEPS.pin_dependency(
+            self.hub,
+            "mineru",
+            "1.0.22",
+            apply=False,
+            fetch_json=self.fetch_json,
+        )
+        self.assertIn('"mineru-open-mcp==1.0.22"', proposed)
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+        MCP_DEPS.pin_dependency(
+            self.hub,
+            "mineru",
+            "1.0.22",
+            apply=True,
+            fetch_json=self.fetch_json,
+        )
+
+        self.assertFalse(MCP_DEPS._has_xattrs(self.shared_path))
+        self.assertIn(
+            b"mineru-open-mcp==1.0.22", self.shared_path.read_bytes()
+        )
 
     def test_pin_refuses_darwin_acl_with_native_xattr_helper(self):
         self.write_config(

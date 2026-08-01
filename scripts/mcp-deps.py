@@ -22,6 +22,7 @@ _NPM_PACKAGE = re.compile(
 _PYPI_PACKAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MAX_REGISTRY_RESPONSE = 2 * 1024 * 1024
+_OS_MANAGED_XATTRS = frozenset({"com.apple.provenance"})
 
 
 @dataclass(frozen=True)
@@ -319,9 +320,13 @@ def _regular_file_metadata(path: Path) -> os.stat_result:
 def _has_xattrs(path: Path) -> bool:
     if hasattr(os, "listxattr"):
         try:
-            return bool(os.listxattr(path, follow_symlinks=False))
+            names = os.listxattr(path, follow_symlinks=False)
         except OSError:
             return True
+        return any(
+            not isinstance(name, str) or name not in _OS_MANAGED_XATTRS
+            for name in names
+        )
     if sys.platform != "darwin":
         return True
 
@@ -335,7 +340,13 @@ def _has_xattrs(path: Path) -> bool:
         )
     except OSError:
         return True
-    return result.returncode != 0 or bool(result.stdout)
+    if result.returncode != 0:
+        return True
+    try:
+        names = result.stdout.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return True
+    return any(name not in _OS_MANAGED_XATTRS for name in names)
 
 
 def _has_macos_acl(path: Path) -> bool:
