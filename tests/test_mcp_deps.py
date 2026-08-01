@@ -2,11 +2,13 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -860,6 +862,73 @@ class McpDependencyTests(unittest.TestCase):
         self.assertFalse(http_body.read_called)
 
 
+class RecordedInput(io.BytesIO):
+    def __init__(self, events, close_failures=0):
+        super().__init__()
+        self.events = events
+        self.close_failures = close_failures
+
+    def close(self):
+        if not self.closed:
+            self.events.append("close-stdin")
+        if self.close_failures:
+            self.close_failures -= 1
+            raise OSError("PRIVATE-CLOSE-OUTPUT")
+        super().close()
+
+
+class ScriptedProcess:
+    def __init__(
+        self,
+        events,
+        wait_results,
+        *,
+        terminate_error=None,
+        kill_error=None,
+        stdin_close_failures=0,
+    ):
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "scripted", "version": "1.0"},
+            },
+        }
+        tools = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"tools": [{"name": "status"}]},
+        }
+        stdout = (json.dumps(initialize) + "\n" + json.dumps(tools) + "\n").encode()
+        self.events = events
+        self.wait_results = list(wait_results)
+        self.terminate_error = terminate_error
+        self.kill_error = kill_error
+        self.pid = 424242
+        self.stdin = RecordedInput(events, stdin_close_failures)
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO()
+
+    def wait(self, timeout):
+        self.events.append("wait")
+        result = self.wait_results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def terminate(self):
+        self.events.append("terminate")
+        if self.terminate_error is not None:
+            raise self.terminate_error
+
+    def kill(self):
+        self.events.append("kill")
+        if self.kill_error is not None:
+            raise self.kill_error
+
+
 class McpSmokeDependencyTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -882,17 +951,35 @@ class McpSmokeDependencyTests(unittest.TestCase):
                 extra_arg = sys.argv[3] if len(sys.argv) > 3 else None
                 messages = []
 
+                def persist():
+                    record_path.write_text(json.dumps({
+                        "messages": messages,
+                        "extra_arg": extra_arg,
+                        "fake_env": os.environ.get("FAKE_ENV"),
+                    }))
+
                 def receive():
                     line = sys.stdin.readline()
                     if not line:
                         return None
                     message = json.loads(line)
                     messages.append(message)
+                    persist()
                     return message
 
                 def send(message):
                     sys.stdout.write(json.dumps(message) + "\\n")
                     sys.stdout.flush()
+
+                def send_fragmented(message):
+                    payload = (json.dumps(message, ensure_ascii=False) + "\\n").encode()
+                    marker = "伪".encode()
+                    split_at = payload.index(marker) + 1
+                    sys.stdout.buffer.write(payload[:split_at])
+                    sys.stdout.buffer.flush()
+                    time.sleep(0.02)
+                    sys.stdout.buffer.write(payload[split_at:])
+                    sys.stdout.buffer.flush()
 
                 initialize = receive()
                 if scenario == "timeout":
@@ -915,7 +1002,31 @@ class McpSmokeDependencyTests(unittest.TestCase):
                         "method": "notifications/progress",
                         "params": {"progress": 1},
                     })
+                if scenario == "invalid-notification":
+                    send({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": [],
+                    })
+                if scenario == "server-ping":
+                    send({
+                        "jsonrpc": "2.0",
+                        "id": "server-ping-1",
+                        "method": "ping",
+                        "params": {},
+                    })
+                    ping_response = receive()
+                if scenario == "unsupported-server-request":
+                    send({
+                        "jsonrpc": "2.0",
+                        "id": "server-tools-call",
+                        "method": "tools/call",
+                        "params": {"name": "status", "arguments": {}},
+                    })
+                    unsupported_response = receive()
                 response_id = 999 if scenario == "wrong-id" else initialize["id"]
+                if scenario == "boolean-id":
+                    response_id = True
                 if scenario == "rpc-error":
                     send({
                         "jsonrpc": "2.0",
@@ -924,38 +1035,133 @@ class McpSmokeDependencyTests(unittest.TestCase):
                     })
                     time.sleep(5)
                 protocol = "2024-11-05" if scenario == "protocol-mismatch" else "2025-06-18"
-                send({
+                capabilities = {"tools": {"listChanged": True}}
+                server_info = {"name": "fake-mcp", "version": "1.0"}
+                if scenario == "missing-capabilities":
+                    capabilities = None
+                elif scenario == "malformed-capabilities":
+                    capabilities = []
+                elif scenario == "missing-tools-capability":
+                    capabilities = {}
+                elif scenario == "malformed-tools-capability":
+                    capabilities = {"tools": []}
+                elif scenario == "malformed-tools-flags":
+                    capabilities = {"tools": {"listChanged": 1}}
+                elif scenario == "missing-server-info":
+                    server_info = None
+                elif scenario == "malformed-server-info":
+                    server_info = {"name": "", "version": 1}
+                elif scenario == "whitespace-server-info":
+                    server_info = {"name": "   ", "version": "1.0"}
+                initialize_result = {
+                    "protocolVersion": protocol,
+                    "capabilities": capabilities,
+                    "serverInfo": server_info,
+                }
+                if scenario == "fragmented-utf8":
+                    initialize_result["serverInfo"]["name"] = "伪服务"
+                if capabilities is None:
+                    initialize_result.pop("capabilities")
+                if server_info is None:
+                    initialize_result.pop("serverInfo")
+                initialize_response = {
                     "jsonrpc": "2.0",
                     "id": response_id,
-                    "result": {"protocolVersion": protocol, "capabilities": {}},
-                })
+                    "result": initialize_result,
+                }
+                if scenario == "fragmented-utf8":
+                    send_fragmented(initialize_response)
+                elif scenario == "coalesced-frames":
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {"progress": 1},
+                    }
+                    payload = (
+                        json.dumps(notification)
+                        + "\\n"
+                        + json.dumps(initialize_response)
+                        + "\\n"
+                    )
+                    sys.stdout.write(payload)
+                    sys.stdout.flush()
+                else:
+                    send(initialize_response)
                 initialized = receive()
                 tools_request = receive()
+                next_cursor = None
                 if scenario == "non-list-tools":
                     tools = {"name": "extract"}
                 elif scenario == "invalid-tool":
                     tools = [{"name": ""}]
                 elif scenario == "unsafe-tool":
                     tools = [{"name": "extract\\nPRIVATE-RAW-OUTPUT"}]
+                elif scenario in (
+                    "paginated",
+                    "repeated-cursor",
+                    "pagination-timeout",
+                    "pagination-output-cap",
+                ):
+                    description = (
+                        "x" * 140000
+                        if scenario == "pagination-output-cap"
+                        else None
+                    )
+                    tools = [
+                        {"name": "one", "description": description},
+                        {"name": "status"},
+                    ]
+                    next_cursor = "opaque-page-2"
+                elif scenario == "malformed-cursor":
+                    tools = [{"name": "one"}]
+                    next_cursor = 7
                 else:
                     tools = [
                         {"name": "status", "description": "private description"},
                         {"name": "extract"},
                         {"name": "status"},
                     ]
+                tools_result = {"tools": tools}
+                if next_cursor is not None:
+                    tools_result["nextCursor"] = next_cursor
                 send({
                     "jsonrpc": "2.0",
                     "id": tools_request["id"],
-                    "result": {"tools": tools},
+                    "result": tools_result,
                 })
+                if scenario in (
+                    "paginated",
+                    "repeated-cursor",
+                    "pagination-timeout",
+                    "pagination-output-cap",
+                ):
+                    next_tools_request = receive()
+                    if scenario == "pagination-timeout":
+                        time.sleep(5)
+                    next_tools_result = {
+                        "tools": [
+                            {
+                                "name": "extract",
+                                "description": (
+                                    "x" * 140000
+                                    if scenario == "pagination-output-cap"
+                                    else None
+                                ),
+                            },
+                            {"name": "one"},
+                        ],
+                    }
+                    if scenario == "repeated-cursor":
+                        next_tools_result["nextCursor"] = "opaque-page-2"
+                    send({
+                        "jsonrpc": "2.0",
+                        "id": next_tools_request["id"],
+                        "result": next_tools_result,
+                    })
                 if scenario == "late-stderr-cap":
                     sys.stderr.write("PRIVATE-RAW-OUTPUT" * 20000)
                     sys.stderr.flush()
-                record_path.write_text(json.dumps({
-                    "messages": messages,
-                    "extra_arg": extra_arg,
-                    "fake_env": os.environ.get("FAKE_ENV"),
-                }))
+                persist()
                 if scenario == "nonzero":
                     raise SystemExit(7)
                 if scenario == "hang-after-tools":
@@ -1034,6 +1240,133 @@ class McpSmokeDependencyTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "healthy")
         self.assertEqual(result["tools"], ["extract", "status"])
+
+    def test_replies_only_to_server_ping_requests(self):
+        result = self.smoke("server-ping")
+
+        self.assertEqual(result["status"], "healthy")
+        record = json.loads(self.record_path.read_text(encoding="utf-8"))
+        ping_responses = [
+            message
+            for message in record["messages"]
+            if message.get("id") == "server-ping-1" and "method" not in message
+        ]
+        self.assertEqual(
+            ping_responses,
+            [{"jsonrpc": "2.0", "id": "server-ping-1", "result": {}}],
+        )
+        self.assertNotIn(
+            "tools/call",
+            [message.get("method") for message in record["messages"]],
+        )
+
+    def test_rejects_boolean_response_ids_and_malformed_notifications(self):
+        for scenario in ("boolean-id", "invalid-notification"):
+            with self.subTest(scenario=scenario):
+                with self.assertRaises(DependencyError):
+                    self.smoke(scenario, timeout=0.3)
+
+    def test_rejects_server_requests_other_than_ping_without_responding(self):
+        with self.assertRaises(DependencyError):
+            self.smoke("unsupported-server-request", timeout=0.3)
+
+        record = json.loads(self.record_path.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "server-tools-call",
+            [
+                message.get("id")
+                for message in record["messages"]
+                if "method" not in message
+            ],
+        )
+
+    def test_handles_fragmented_utf8_and_coalesced_stdio_frames(self):
+        for scenario in ("fragmented-utf8", "coalesced-frames"):
+            with self.subTest(scenario=scenario):
+                result = self.smoke(scenario)
+
+                self.assertEqual(result["status"], "healthy")
+                self.assertEqual(result["tools"], ["extract", "status"])
+
+    def test_requires_complete_tool_capable_initialization_before_operation(self):
+        scenarios = (
+            "missing-capabilities",
+            "malformed-capabilities",
+            "missing-tools-capability",
+            "malformed-tools-capability",
+            "malformed-tools-flags",
+            "missing-server-info",
+            "malformed-server-info",
+            "whitespace-server-info",
+        )
+
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                with self.assertRaises(DependencyError):
+                    self.smoke(scenario, timeout=0.3)
+
+                record = json.loads(self.record_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    [message["method"] for message in record["messages"]],
+                    ["initialize"],
+                )
+
+    def test_follows_opaque_tool_list_cursors_and_aggregates_all_pages(self):
+        result = self.smoke("paginated")
+
+        self.assertEqual(result["tool_count"], 3)
+        self.assertEqual(result["tools"], ["extract", "one", "status"])
+        record = json.loads(self.record_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [message["method"] for message in record["messages"]],
+            [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/list",
+            ],
+        )
+        self.assertEqual(
+            [
+                message.get("id")
+                for message in record["messages"]
+                if message["method"] == "tools/list"
+            ],
+            [2, 3],
+        )
+        self.assertEqual(
+            record["messages"][3]["params"], {"cursor": "opaque-page-2"}
+        )
+        self.assertNotIn(
+            "tools/call", [message["method"] for message in record["messages"]]
+        )
+
+    def test_rejects_malformed_and_repeated_tool_list_cursors(self):
+        for scenario in ("malformed-cursor", "repeated-cursor"):
+            with self.subTest(scenario=scenario):
+                with self.assertRaises(DependencyError):
+                    self.smoke(scenario, timeout=0.3)
+                if scenario == "repeated-cursor":
+                    record = json.loads(
+                        self.record_path.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        [
+                            message["method"]
+                            for message in record["messages"]
+                            if message["method"] == "tools/list"
+                        ],
+                        ["tools/list", "tools/list"],
+                    )
+
+    def test_pagination_shares_one_deadline_and_output_budget(self):
+        for scenario in ("pagination-timeout", "pagination-output-cap"):
+            with self.subTest(scenario=scenario):
+                started = time.monotonic()
+                with self.assertRaises(DependencyError):
+                    self.smoke(scenario, timeout=0.3)
+
+                self.assertLess(time.monotonic() - started, 1)
 
     def test_rejects_protocol_and_response_failures_without_raw_output(self):
         scenarios = (
@@ -1211,6 +1544,123 @@ class McpSmokeDependencyTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "healthy")
         self.assertLess(time.monotonic() - started, 2)
+
+    def test_cleanup_uses_direct_fallbacks_and_reaps_before_success(self):
+        self.write_config({"command": sys.executable, "args": []})
+        events = []
+        timeout_error = subprocess.TimeoutExpired("fake", 0.1)
+        process = ScriptedProcess(
+            events, [timeout_error, timeout_error, 0]
+        )
+
+        def killpg(_pid, requested_signal):
+            events.append(
+                "group-terminate"
+                if requested_signal == signal.SIGTERM
+                else "group-kill"
+            )
+            raise OSError("PRIVATE-RAW-OUTPUT")
+
+        with mock.patch.object(MCP_DEPS.os, "killpg", side_effect=killpg):
+            result = MCP_DEPS.smoke_dependency(
+                self.hub, "mineru", runner=lambda *_args, **_kwargs: process
+            )
+
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual(
+            events,
+            [
+                "close-stdin",
+                "wait",
+                "group-terminate",
+                "terminate",
+                "wait",
+                "group-kill",
+                "kill",
+                "wait",
+            ],
+        )
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertFalse(
+            any(
+                thread.name.startswith("mcp-smoke-reader-")
+                for thread in threading.enumerate()
+            )
+        )
+
+    def test_cleanup_fails_closed_on_wait_or_signal_failure_without_raw_output(self):
+        self.write_config({"command": sys.executable, "args": []})
+        timeout_error = subprocess.TimeoutExpired("fake", 0.1)
+        fixtures = (
+            (
+                "wait-error",
+                [OSError("PRIVATE-WAIT-OUTPUT"), 0],
+                None,
+                None,
+                0,
+            ),
+            (
+                "unreaped",
+                [timeout_error, timeout_error, timeout_error],
+                OSError("PRIVATE-TERM-OUTPUT"),
+                OSError("PRIVATE-KILL-OUTPUT"),
+                0,
+            ),
+            (
+                "stdin-close",
+                [0],
+                None,
+                None,
+                1,
+            ),
+        )
+
+        for label, waits, terminate_error, kill_error, close_failures in fixtures:
+            with self.subTest(label=label):
+                events = []
+                process = ScriptedProcess(
+                    events,
+                    waits,
+                    terminate_error=terminate_error,
+                    kill_error=kill_error,
+                    stdin_close_failures=close_failures,
+                )
+                with mock.patch.object(
+                    MCP_DEPS.os,
+                    "killpg",
+                    side_effect=OSError("PRIVATE-GROUP-OUTPUT"),
+                ):
+                    with self.assertRaises(DependencyError) as raised:
+                        MCP_DEPS.smoke_dependency(
+                            self.hub,
+                            "mineru",
+                            runner=lambda *_args, value=process, **_kwargs: value,
+                        )
+
+                self.assertNotIn("PRIVATE", str(raised.exception))
+                self.assertTrue(process.stdin.closed)
+                self.assertTrue(process.stdout.closed)
+                self.assertTrue(process.stderr.closed)
+
+    def test_rejects_non_posix_platform_before_launch(self):
+        self.write_config({"command": sys.executable, "args": []})
+        launches = []
+
+        def runner(*_args, **_kwargs):
+            launches.append(True)
+            raise AssertionError("runner must not be called")
+
+        with mock.patch.object(MCP_DEPS.os, "name", "nt"):
+            with self.assertRaisesRegex(
+                DependencyError, "^MCP smoke probe requires POSIX$"
+            ):
+                MCP_DEPS.smoke_dependency(
+                    self.hub, "mineru", runner=runner
+                )
+
+        self.assertEqual(launches, [])
 
 
 class FakeResponse(io.BytesIO):
