@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -556,6 +557,54 @@ class AgentDoctorTests(unittest.TestCase):
         bash_suite_index = branch.index("test-suite.sh")
         self.assertLess(unittest_index, syntax_index)
         self.assertLess(syntax_index, bash_suite_index)
+
+    def test_test_command_imports_tool_packages_from_external_cwd(self):
+        """The test gate must not rely on the caller's cwd or PYTHONPATH."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "tool"
+            external_cwd = root / "external"
+            home = root / "home"
+            hub = root / "hub"
+            (tool / "bin").mkdir(parents=True)
+            (tool / "scripts").mkdir()
+            (tool / "tests").mkdir()
+            external_cwd.mkdir()
+            hub.mkdir()
+            (hub / "manifest.yaml").write_text("skills: []\n", encoding="utf-8")
+            shutil.copy2(ENTRYPOINT, tool / "bin" / "agent-sync")
+            shutil.copy2(
+                REPO / "scripts" / "capability_resolver.py",
+                tool / "scripts" / "capability_resolver.py",
+            )
+            (tool / "tests" / "test_import.py").write_text(
+                "from scripts.capability_resolver import McpIdentity\n\n"
+                "class ImportTest:\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            (tool / "scripts" / "test-suite.sh").write_text(
+                "#!/bin/bash\nexit 0\n",
+                encoding="utf-8",
+            )
+
+            for pythonpath in (None, str(root / "inherited-pythonpath")):
+                env = {
+                    "HOME": str(home),
+                    "PATH": os.defpath,
+                    "AGENT_HUB_ROOT": str(hub),
+                }
+                if pythonpath is not None:
+                    env["PYTHONPATH"] = pythonpath
+                result = subprocess.run(
+                    [str(tool / "bin" / "agent-sync"), "test"],
+                    cwd=external_cwd,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                )
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_rule_sync_deduplicates_legacy_rule_copies(self):
         rule = "[Agent Sync Disambiguation Rule]\nUse agent-sync.\n"

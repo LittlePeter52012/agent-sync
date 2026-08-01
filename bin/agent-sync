@@ -235,7 +235,8 @@ case "$cmd" in
     test)
         require_hub
         echo "[test 1/4] Python unittest suite"
-        python3 -m unittest discover -s "$AGENT_SYNC_HOME/tests" -v
+        PYTHONPATH="$AGENT_SYNC_HOME${PYTHONPATH:+:$PYTHONPATH}" \
+            python3 -m unittest discover -s "$AGENT_SYNC_HOME/tests" -v
         echo "[test 2/4] Python syntax"
         python3 - "$AGENT_SYNC_HOME" <<'PY'
 import ast
