@@ -592,21 +592,21 @@ class _ChildOutput:
         self.process = process
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.limit_exceeded = threading.Event()
-        self.threads = [
-            threading.Thread(
-                target=self._read_stdout,
-                args=(process.stdout,),
-                name="mcp-smoke-reader-stdout",
+        self.threads: list[threading.Thread] = []
+
+    def start_readers(self) -> None:
+        readers = (
+            (self._read_stdout, self.process.stdout, "mcp-smoke-reader-stdout"),
+            (self._read_stderr, self.process.stderr, "mcp-smoke-reader-stderr"),
+        )
+        for target, stream, name in readers:
+            thread = threading.Thread(
+                target=target,
+                args=(stream,),
+                name=name,
                 daemon=True,
-            ),
-            threading.Thread(
-                target=self._read_stderr,
-                args=(process.stderr,),
-                name="mcp-smoke-reader-stderr",
-                daemon=True,
-            ),
-        ]
-        for thread in self.threads:
+            )
+            self.threads.append(thread)
             thread.start()
 
     def _read_stdout(self, stream) -> None:
@@ -668,7 +668,10 @@ class _ChildOutput:
             if payload is _STREAM_EOF:
                 raise DependencyError("MCP smoke probe ended before responding")
             try:
-                message = json.loads(payload.decode("utf-8"))
+                message = json.loads(
+                    payload.decode("utf-8"),
+                    parse_constant=_reject_json_constant,
+                )
             except Exception:
                 raise DependencyError("invalid MCP smoke probe response") from None
             if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
@@ -731,16 +734,29 @@ class _ChildOutput:
             return result
 
     def close_and_join(self) -> bool:
-        closed = True
-        for stream_name in ("stdin", "stdout", "stderr"):
-            try:
-                getattr(self.process, stream_name).close()
-            except Exception:
-                closed = False
+        closed = _close_process_streams(self.process)
+        joined = True
         deadline = time.monotonic() + _SHUTDOWN_GRACE
         for thread in self.threads:
-            thread.join(timeout=max(0, deadline - time.monotonic()))
-        return closed and not any(thread.is_alive() for thread in self.threads)
+            try:
+                thread.join(timeout=max(0, deadline - time.monotonic()))
+            except Exception:
+                joined = False
+        try:
+            alive = any(thread.is_alive() for thread in self.threads)
+        except Exception:
+            alive = True
+        return closed and joined and not alive
+
+
+def _close_process_streams(process) -> bool:
+    closed = True
+    for stream_name in ("stdin", "stdout", "stderr"):
+        try:
+            getattr(process, stream_name).close()
+        except Exception:
+            closed = False
+    return closed
 
 
 def _valid_message_id(value: object) -> bool:
@@ -751,6 +767,10 @@ def _valid_message_id(value: object) -> bool:
     if isinstance(value, int):
         return True
     return isinstance(value, float) and math.isfinite(value)
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("non-standard JSON constant")
 
 
 def _send_mcp_message(process, message: dict[str, object]) -> None:
@@ -799,11 +819,7 @@ def _tool_page(listed: dict[str, object]) -> tuple[set[str], str | None]:
     if "nextCursor" not in listed:
         return {tool["name"] for tool in tools}, None
     cursor = listed["nextCursor"]
-    if (
-        not isinstance(cursor, str)
-        or not cursor
-        or _CONTROL_CHARACTERS.search(cursor)
-    ):
+    if not isinstance(cursor, str):
         raise DependencyError("invalid MCP smoke probe cursor")
     return {tool["name"] for tool in tools}, cursor
 
@@ -903,10 +919,12 @@ def smoke_dependency(
         raise DependencyError("MCP smoke probe launch failed") from None
 
     deadline = time.monotonic() + float(timeout)
-    output = _ChildOutput(process)
+    output = None
     failure: DependencyError | None = None
     result: dict[str, object] | None = None
     try:
+        output = _ChildOutput(process)
+        output.start_readers()
         _send_mcp_message(
             process,
             {
@@ -982,13 +1000,18 @@ def smoke_dependency(
     except DependencyError as error:
         returncode, forced = None, False
         cleanup_failure = error
-    if not output.close_and_join() and cleanup_failure is None:
+    streams_clean = (
+        output.close_and_join()
+        if output is not None
+        else _close_process_streams(process)
+    )
+    if not streams_clean and cleanup_failure is None:
         cleanup_failure = DependencyError("MCP smoke probe cleanup failed")
     if cleanup_failure is not None:
         raise cleanup_failure
     if failure is not None:
         raise failure
-    if output.limit_exceeded.is_set():
+    if output is not None and output.limit_exceeded.is_set():
         raise DependencyError("MCP smoke probe output limit exceeded")
     if not forced and returncode not in (0, None):
         raise DependencyError("MCP smoke probe process failed")

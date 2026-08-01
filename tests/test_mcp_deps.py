@@ -929,6 +929,58 @@ class ScriptedProcess:
             raise self.kill_error
 
 
+class BlockingStream:
+    def __init__(self):
+        self.closed = False
+        self.released = threading.Event()
+
+    def read(self, _size=-1):
+        self.released.wait(2)
+        return b""
+
+    def close(self):
+        self.closed = True
+        self.released.set()
+
+
+class SetupFailureProcess:
+    def __init__(self, events):
+        self.events = events
+        self.pid = 434343
+        self.stdin = RecordedInput(events)
+        self.stdout = BlockingStream()
+        self.stderr = BlockingStream()
+        self.wait_count = 0
+        self.reaped = False
+
+    def wait(self, timeout):
+        self.events.append("wait")
+        self.wait_count += 1
+        if self.wait_count == 1:
+            raise subprocess.TimeoutExpired("fake", timeout)
+        self.reaped = True
+        return 0
+
+    def terminate(self):
+        self.events.append("terminate")
+
+    def kill(self):
+        self.events.append("kill")
+
+
+class StartFailureThread:
+    name = "mcp-smoke-reader-stderr"
+
+    def start(self):
+        raise RuntimeError("PRIVATE-THREAD-START-OUTPUT")
+
+    def join(self, timeout=None):
+        return None
+
+    def is_alive(self):
+        return False
+
+
 class McpSmokeDependencyTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1008,6 +1060,12 @@ class McpSmokeDependencyTests(unittest.TestCase):
                         "method": "notifications/progress",
                         "params": [],
                     })
+                if scenario == "infinity-notification":
+                    sys.stdout.write(
+                        '{"jsonrpc":"2.0","method":"notifications/progress",'
+                        '"params":{"progress":Infinity}}\\n'
+                    )
+                    sys.stdout.flush()
                 if scenario == "server-ping":
                     send({
                         "jsonrpc": "2.0",
@@ -1058,6 +1116,8 @@ class McpSmokeDependencyTests(unittest.TestCase):
                     "capabilities": capabilities,
                     "serverInfo": server_info,
                 }
+                if scenario == "nan-initialize":
+                    initialize_result["extension"] = float("nan")
                 if scenario == "fragmented-utf8":
                     initialize_result["serverInfo"]["name"] = "伪服务"
                 if capabilities is None:
@@ -1101,6 +1161,9 @@ class McpSmokeDependencyTests(unittest.TestCase):
                     "repeated-cursor",
                     "pagination-timeout",
                     "pagination-output-cap",
+                    "opaque-empty-cursor",
+                    "opaque-control-cursor",
+                    "opaque-unicode-cursor",
                 ):
                     description = (
                         "x" * 140000
@@ -1111,10 +1174,19 @@ class McpSmokeDependencyTests(unittest.TestCase):
                         {"name": "one", "description": description},
                         {"name": "status"},
                     ]
-                    next_cursor = "opaque-page-2"
+                    if scenario == "opaque-empty-cursor":
+                        next_cursor = ""
+                    elif scenario == "opaque-control-cursor":
+                        next_cursor = "\\x00\\n"
+                    elif scenario == "opaque-unicode-cursor":
+                        next_cursor = "页/二"
+                    else:
+                        next_cursor = "opaque-page-2"
                 elif scenario == "malformed-cursor":
                     tools = [{"name": "one"}]
                     next_cursor = 7
+                elif scenario == "negative-infinity-tools":
+                    tools = [{"name": "status", "weight": float("-inf")}]
                 else:
                     tools = [
                         {"name": "status", "description": "private description"},
@@ -1134,6 +1206,9 @@ class McpSmokeDependencyTests(unittest.TestCase):
                     "repeated-cursor",
                     "pagination-timeout",
                     "pagination-output-cap",
+                    "opaque-empty-cursor",
+                    "opaque-control-cursor",
+                    "opaque-unicode-cursor",
                 ):
                     next_tools_request = receive()
                     if scenario == "pagination-timeout":
@@ -1288,6 +1363,20 @@ class McpSmokeDependencyTests(unittest.TestCase):
                 self.assertEqual(result["status"], "healthy")
                 self.assertEqual(result["tools"], ["extract", "status"])
 
+    def test_rejects_nonstandard_json_numeric_constants(self):
+        for scenario in (
+            "nan-initialize",
+            "infinity-notification",
+            "negative-infinity-tools",
+        ):
+            with self.subTest(scenario=scenario):
+                with self.assertRaises(DependencyError) as raised:
+                    self.smoke(scenario, timeout=0.3)
+
+                message = str(raised.exception)
+                self.assertNotIn("NaN", message)
+                self.assertNotIn("Infinity", message)
+
     def test_requires_complete_tool_capable_initialization_before_operation(self):
         scenarios = (
             "missing-capabilities",
@@ -1367,6 +1456,35 @@ class McpSmokeDependencyTests(unittest.TestCase):
                     self.smoke(scenario, timeout=0.3)
 
                 self.assertLess(time.monotonic() - started, 1)
+
+    def test_echoes_every_opaque_string_cursor_exactly(self):
+        fixtures = (
+            ("opaque-empty-cursor", ""),
+            ("opaque-control-cursor", "\x00\n"),
+            ("opaque-unicode-cursor", "页/二"),
+        )
+
+        for scenario, expected_cursor in fixtures:
+            with self.subTest(scenario=scenario):
+                result = self.smoke(scenario)
+
+                record = json.loads(self.record_path.read_text(encoding="utf-8"))
+                tool_requests = [
+                    message
+                    for message in record["messages"]
+                    if message.get("method") == "tools/list"
+                ]
+                self.assertEqual(
+                    [message["id"] for message in tool_requests], [2, 3]
+                )
+                self.assertEqual(
+                    tool_requests[1]["params"], {"cursor": expected_cursor}
+                )
+                self.assertNotIn(
+                    "tools/call",
+                    [message.get("method") for message in record["messages"]],
+                )
+                self.assertNotIn("cursor", json.dumps(result))
 
     def test_rejects_protocol_and_response_failures_without_raw_output(self):
         scenarios = (
@@ -1661,6 +1779,65 @@ class McpSmokeDependencyTests(unittest.TestCase):
                 )
 
         self.assertEqual(launches, [])
+
+    def test_reader_setup_failures_cleanup_child_pipes_and_started_threads(self):
+        self.write_config({"command": sys.executable, "args": []})
+        real_thread = threading.Thread
+
+        def construction_failure(*_args, **_kwargs):
+            raise RuntimeError("PRIVATE-THREAD-CONSTRUCTION-OUTPUT")
+
+        thread_calls = []
+
+        def second_start_failure(*args, **kwargs):
+            thread_calls.append(True)
+            if len(thread_calls) == 1:
+                return real_thread(*args, **kwargs)
+            return StartFailureThread()
+
+        fixtures = (
+            ("first-construction", construction_failure),
+            ("second-start", second_start_failure),
+        )
+
+        for label, thread_factory in fixtures:
+            with self.subTest(label=label):
+                events = []
+                process = SetupFailureProcess(events)
+                thread_calls.clear()
+                try:
+                    with mock.patch.object(
+                        MCP_DEPS.threading, "Thread", side_effect=thread_factory
+                    ), mock.patch.object(
+                        MCP_DEPS.os,
+                        "killpg",
+                        side_effect=lambda _pid, _signal: events.append("group-signal"),
+                    ):
+                        with self.assertRaises(DependencyError) as raised:
+                            MCP_DEPS.smoke_dependency(
+                                self.hub,
+                                "mineru",
+                                runner=lambda *_args, value=process, **_kwargs: value,
+                            )
+                finally:
+                    process.stdin.close()
+                    process.stdout.close()
+                    process.stderr.close()
+                    for thread in threading.enumerate():
+                        if thread.name.startswith("mcp-smoke-reader-"):
+                            thread.join(timeout=0.2)
+
+                self.assertNotIn("PRIVATE", str(raised.exception))
+                self.assertTrue(process.reaped)
+                self.assertTrue(process.stdin.closed)
+                self.assertTrue(process.stdout.closed)
+                self.assertTrue(process.stderr.closed)
+                self.assertFalse(
+                    any(
+                        thread.name.startswith("mcp-smoke-reader-")
+                        for thread in threading.enumerate()
+                    )
+                )
 
 
 class FakeResponse(io.BytesIO):
