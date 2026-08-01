@@ -1224,29 +1224,29 @@ def capability_labels(name: str, config: Path) -> list[str]:
 
 def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]:
     targets = [
-        ("Codex / ChatGPT", "codex", "codex", HOME / ".codex" / "config.toml", HOME / ".codex" / "skills", "toml", ("ChatGPT.app",)),
-        ("Claude", "claude", "claude", HOME / ".claude.json", HOME / ".claude" / "skills", "json", ("Claude.app",)),
-        ("Cursor", "cursor", "cursor", HOME / ".cursor" / "mcp.json", HOME / ".cursor" / "skills", "json", ("Cursor.app",)),
-        ("Gemini CLI", "gemini", "gemini", HOME / ".gemini" / "settings.json", HOME / ".agents" / "skills", "json", ()),
-        ("Gemini global", "", "gemini-global", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", ("Gemini.app",)),
-        ("Antigravity App", "", "antigravity-app", HOME / ".gemini" / "antigravity" / "mcp_config.json", HOME / ".gemini" / "antigravity" / "skills", "json", ("Antigravity.app",)),
-        ("Antigravity CLI", "agy", "antigravity-cli", HOME / ".gemini" / "antigravity-cli" / "mcp_config.json", HOME / ".gemini" / "antigravity-cli" / "skills", "json", ()),
-        ("Antigravity IDE", "", "antigravity-ide", HOME / ".gemini" / "antigravity-ide" / "mcp_config.json", HOME / ".gemini" / "antigravity-ide" / "skills", "json", ("Antigravity IDE.app",)),
-        ("OpenCode", "opencode", "opencode", HOME / ".config" / "opencode" / "opencode.json", HOME / ".config" / "opencode" / "skills", "json", ()),
-        ("Copilot / VS Code", "copilot", "vscode", HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json", HOME / ".copilot" / "skills", "json", ("Visual Studio Code.app",)),
-        ("Agents", "", "agents", HOME / ".agents", HOME / ".agents" / "skills", "none", ()),
+        ("Codex / ChatGPT", "codex", "codex", "codex", HOME / ".codex" / "config.toml", HOME / ".codex" / "skills", "toml", ("ChatGPT.app",)),
+        ("Claude", "claude", "claude", "claude", HOME / ".claude.json", HOME / ".claude" / "skills", "json", ("Claude.app",)),
+        ("Cursor", "cursor", "cursor", "cursor", HOME / ".cursor" / "mcp.json", HOME / ".cursor" / "skills", "json", ("Cursor.app",)),
+        ("Gemini CLI", "gemini", "gemini", "gemini", HOME / ".gemini" / "settings.json", HOME / ".agents" / "skills", "json", ()),
+        ("Gemini global", "", "gemini-global", "gemini-global", HOME / ".gemini" / "config" / "mcp_config.json", HOME / ".gemini" / "config" / "skills", "json", ("Gemini.app",)),
+        ("Antigravity App", "", "antigravity-app", "antigravity-app", HOME / ".gemini" / "antigravity" / "mcp_config.json", HOME / ".gemini" / "antigravity" / "skills", "json", ("Antigravity.app",)),
+        ("Antigravity CLI", "agy", "antigravity-cli", "antigravity-cli", HOME / ".gemini" / "antigravity-cli" / "mcp_config.json", HOME / ".gemini" / "antigravity-cli" / "skills", "json", ()),
+        ("Antigravity IDE", "", "antigravity-ide", "antigravity-ide", HOME / ".gemini" / "antigravity-ide" / "mcp_config.json", HOME / ".gemini" / "antigravity-ide" / "skills", "json", ("Antigravity IDE.app",)),
+        ("OpenCode", "opencode", "opencode", "opencode", HOME / ".config" / "opencode" / "opencode.json", HOME / ".config" / "opencode" / "skills", "json", ()),
+        ("Copilot / VS Code", "copilot", "copilot", "vscode", HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json", HOME / ".copilot" / "skills", "json", ("Visual Studio Code.app",)),
+        ("Agents", "", "agents", "agents", HOME / ".agents", HOME / ".agents" / "skills", "none", ()),
     ]
     records: list[dict[str, Any]] = []
     accepted = {"hub-managed", "plugin-owned", "excluded"}
-    for name, command, target_key, config, skill_dir, kind, apps in targets:
+    for name, command, skill_target_key, mcp_target_key, config, skill_dir, kind, apps in targets:
         config_present = config.exists()
         skill_count, managed_skill_count = effective_skill_counts(
-            target_key,
+            skill_target_key,
             skill_dir,
             skills,
         )
         coverage = (
-            resolve_mcp_coverage(target_key, HOME, HUB)
+            resolve_mcp_coverage(mcp_target_key, HOME, HUB)
             if kind != "none"
             else {}
         )

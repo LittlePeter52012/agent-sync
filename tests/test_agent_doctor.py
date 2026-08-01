@@ -66,6 +66,42 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("safe-model", codex["models"])
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
 
+    def test_copilot_skill_policy_is_independent_from_vscode_mcp_policy(self):
+        (self.hub / "policies").mkdir(exist_ok=True)
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "distribution": {
+                        "copilot": {
+                            "exclude_skills": ["example"],
+                            "exclude_mcp": [],
+                        },
+                        "vscode": {
+                            "exclude_skills": [],
+                            "exclude_mcp": ["shared"],
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        vscode = (
+            self.home
+            / "Library/Application Support/Code/User/mcp.json"
+        )
+        vscode.parent.mkdir(parents=True)
+        vscode.write_text(json.dumps({"servers": {}}), encoding="utf-8")
+
+        report = json.loads(self.run_doctor().stdout)
+        record = next(
+            item for item in report["agents"]
+            if item["name"] == "Copilot / VS Code"
+        )
+
+        self.assertEqual(record["skills"], {"configured": 1, "expected": 1})
+        self.assertEqual(record["managed_skills"], {"configured": 0, "expected": 0})
+        self.assertEqual(record["mcp"], {"configured": 1, "expected": 1})
+
     def test_doctor_counts_cursor_plugin_shared_mcp(self):
         cursor = self.home / ".cursor"
         cursor.mkdir()
@@ -79,7 +115,7 @@ class AgentDoctorTests(unittest.TestCase):
             json.dumps(
                 {
                     "mcpServers": {
-                        "shared": {"command": "plugin-command"}
+                        "shared": {"command": "shared-mcp"}
                     }
                 }
             ),
