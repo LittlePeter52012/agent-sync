@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -266,3 +268,88 @@ def check_dependencies(
             }
         )
     return results
+
+
+def _target_is_available(
+    spec: DependencySpec, version: str, fetch_json: Callable[[str], object]
+) -> bool:
+    try:
+        payload = fetch_json(_registry_url(spec))
+    except Exception:
+        return False
+
+    if not isinstance(payload, dict):
+        return False
+    if spec.ecosystem == "pypi":
+        releases = payload.get("releases")
+        files = releases.get(version) if isinstance(releases, dict) else None
+        return isinstance(files, list) and any(
+            isinstance(file, dict) and file.get("yanked") is False
+            for file in files
+        )
+    if spec.ecosystem == "npm":
+        versions = payload.get("versions")
+        selected = versions.get(version) if isinstance(versions, dict) else None
+        return isinstance(selected, dict) and not bool(selected.get("deprecated"))
+    return False
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary:
+            temporary.write(content)
+        os.replace(temporary_name, path)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def pin_dependency(
+    hub: Path,
+    server: str,
+    version: str,
+    *,
+    apply: bool,
+    fetch_json: Callable[[str], object],
+) -> str:
+    if not isinstance(version, str) or not _NUMERIC_VERSION.fullmatch(version):
+        raise DependencyError("invalid MCP dependency target version")
+
+    spec = next(
+        (item for item in discover_dependencies(hub) if item.server == server),
+        None,
+    )
+    if spec is None:
+        raise DependencyError("unknown MCP dependency server")
+    if not _target_is_available(spec, version, fetch_json):
+        raise DependencyError("MCP dependency target is unavailable")
+
+    config_path = hub / "mcp" / "shared-servers.json"
+    original = config_path.read_text(encoding="utf-8")
+    document = json.loads(original)
+    config = document.get("mcpServers", {}).get(server)
+    if not isinstance(config, dict):
+        raise DependencyError("unknown MCP dependency server")
+    args = config.get("args")
+    if not isinstance(args, list) or len(args) <= spec.argument_index:
+        raise DependencyError("invalid MCP dependency argument")
+    old_argument = args[spec.argument_index]
+    if not isinstance(old_argument, str):
+        raise DependencyError("invalid MCP dependency argument")
+
+    separator = "==" if spec.ecosystem == "pypi" else "@"
+    new_argument = f"{spec.package}{separator}{version}"
+    old_token = json.dumps(old_argument)
+    if original.count(old_token) != 1:
+        raise DependencyError("MCP dependency argument is not uniquely replaceable")
+    proposed = original.replace(old_token, json.dumps(new_argument), 1)
+
+    if apply:
+        _atomic_write(config_path, proposed)
+    return proposed

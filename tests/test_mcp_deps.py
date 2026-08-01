@@ -34,22 +34,33 @@ NPM = {
         "0.8.2": {"deprecated": "Renamed to @bitbonsai/mcpvault"}
     },
 }
+SAFE_NPM = {
+    "dist-tags": {"latest": "0.8.2"},
+    "versions": {"0.8.2": {}},
+}
 
 
 class McpDependencyTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.hub = Path(self.temp_dir.name)
+        self.shared_path = self.hub / "mcp" / "shared-servers.json"
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
     def write_config(self, servers):
-        config = self.hub / "mcp" / "shared-servers.json"
-        config.parent.mkdir(exist_ok=True)
-        config.write_text(
+        self.shared_path.parent.mkdir(exist_ok=True)
+        self.shared_path.write_text(
             json.dumps({"mcpServers": servers}), encoding="utf-8"
         )
+
+    def fetch_json(self, url):
+        if url.startswith("https://pypi.org/"):
+            return PYPI
+        if url.startswith("https://registry.npmjs.org/"):
+            return SAFE_NPM
+        self.fail(f"unexpected registry URL: {url}")
 
     def test_discovers_exact_npm_and_pypi_pins(self):
         self.write_config(
@@ -145,6 +156,184 @@ class McpDependencyTests(unittest.TestCase):
         self.write_config({"local": {"command": "/bin/local", "args": ["--version"]}})
 
         self.assertEqual(discover_dependencies(self.hub), [])
+
+    def test_pin_dry_run_returns_proposal_without_changing_shared_servers(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+        before = self.shared_path.read_bytes()
+
+        proposed = MCP_DEPS.pin_dependency(
+            self.hub,
+            "mineru",
+            "1.0.22",
+            apply=False,
+            fetch_json=self.fetch_json,
+        )
+
+        self.assertIn('"mineru-open-mcp==1.0.22"', proposed)
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_pin_apply_changes_only_the_target_dependency_argument(self):
+        self.write_config(
+            {
+                "mineru": {
+                    "command": "uvx",
+                    "args": ["mineru-open-mcp==1.0.21", "--quiet"],
+                    "env": {"EXTRA": "${EXTRA}"},
+                }
+            }
+        )
+        before = self.shared_path.read_text(encoding="utf-8")
+
+        written = MCP_DEPS.pin_dependency(
+            self.hub,
+            "mineru",
+            "1.0.22",
+            apply=True,
+            fetch_json=self.fetch_json,
+        )
+
+        after = self.shared_path.read_text(encoding="utf-8")
+        self.assertEqual(written, after)
+        self.assertEqual(
+            after,
+            before.replace(
+                "mineru-open-mcp==1.0.21", "mineru-open-mcp==1.0.22"
+            ),
+        )
+
+    def test_pin_converts_unversioned_and_latest_dependencies_to_exact_versions(self):
+        fixtures = (
+            (
+                "mineru",
+                {"command": "uvx", "args": ["mineru-open-mcp"]},
+                "1.0.22",
+                '"mineru-open-mcp==1.0.22"',
+            ),
+            (
+                "obsidian",
+                {
+                    "command": "npx",
+                    "args": ["@mauricio.wolff/mcp-obsidian@latest"],
+                },
+                "0.8.2",
+                '"@mauricio.wolff/mcp-obsidian@0.8.2"',
+            ),
+        )
+
+        for server, config, version, expected in fixtures:
+            with self.subTest(server=server):
+                self.write_config({server: config})
+
+                proposed = MCP_DEPS.pin_dependency(
+                    self.hub,
+                    server,
+                    version,
+                    apply=False,
+                    fetch_json=self.fetch_json,
+                )
+
+                self.assertIn(expected, proposed)
+
+    def test_pin_refuses_invalid_server_and_target_versions(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+        invalid_requests = (
+            ("unknown", "1.0.22"),
+            ("mineru", "mineru-open-mcp==1.0.22"),
+            ("mineru", "latest"),
+            ("mineru", "1.1.0rc1"),
+            ("mineru", "1.1.0-beta.1"),
+            ("mineru", "^1.0.22"),
+        )
+
+        for server, version in invalid_requests:
+            with self.subTest(server=server, version=version):
+                with self.assertRaises(DependencyError):
+                    MCP_DEPS.pin_dependency(
+                        self.hub,
+                        server,
+                        version,
+                        apply=False,
+                        fetch_json=self.fetch_json,
+                    )
+
+    def test_pin_refuses_missing_or_yanked_pypi_target_versions(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+        fixtures = (
+            (
+                "missing",
+                {"info": {"version": "1.0.22"}, "releases": {}},
+            ),
+            (
+                "yanked",
+                {
+                    "info": {"version": "1.0.22"},
+                    "releases": {"1.0.22": [{"yanked": True}]},
+                },
+            ),
+        )
+
+        for label, payload in fixtures:
+            with self.subTest(label=label):
+                with self.assertRaises(DependencyError):
+                    MCP_DEPS.pin_dependency(
+                        self.hub,
+                        "mineru",
+                        "1.0.22",
+                        apply=False,
+                        fetch_json=lambda _url, value=payload: value,
+                    )
+
+    def test_pin_refuses_deprecated_npm_target_versions(self):
+        self.write_config(
+            {
+                "obsidian": {
+                    "command": "npx",
+                    "args": ["@mauricio.wolff/mcp-obsidian@latest"],
+                }
+            }
+        )
+        deprecated_target = {
+            "dist-tags": {"latest": "0.8.2"},
+            "versions": {"0.8.2": {"deprecated": "renamed"}},
+        }
+
+        with self.assertRaises(DependencyError):
+            MCP_DEPS.pin_dependency(
+                self.hub,
+                "obsidian",
+                "0.8.2",
+                apply=False,
+                fetch_json=lambda _url: deprecated_target,
+            )
+
+    def test_pin_refuses_when_old_argument_token_is_not_unique(self):
+        self.write_config(
+            {
+                "mineru": {
+                    "command": "uvx",
+                    "args": ["mineru-open-mcp==1.0.21"],
+                },
+                "copy": {
+                    "command": "uvx",
+                    "args": ["mineru-open-mcp==1.0.21"],
+                },
+            }
+        )
+
+        with self.assertRaises(DependencyError):
+            MCP_DEPS.pin_dependency(
+                self.hub,
+                "mineru",
+                "1.0.22",
+                apply=False,
+                fetch_json=self.fetch_json,
+            )
 
     def test_classifies_primary_registry_versions_and_deprecation(self):
         self.write_config(
