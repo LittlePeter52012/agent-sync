@@ -418,7 +418,7 @@ Run:
 
 ```bash
 python3 -m unittest tests.test_agent_doctor -v
-AGENT_HUB_ROOT=/Users/slavatang/.config/agent-hub python3 scripts/agent-doctor.py --json | python3 -c '
+AGENT_HUB_ROOT="$HOME/.config/agent-hub" python3 scripts/agent-doctor.py --json | python3 -c '
 import json, sys
 report = json.load(sys.stdin)
 assert all({'severity', 'message', 'scope', 'owner'} <= set(item) for item in report['findings'])

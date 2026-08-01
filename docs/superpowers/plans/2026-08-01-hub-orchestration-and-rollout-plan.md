@@ -29,7 +29,7 @@ Start this plan only after the combined public Agent Sync worktree has completed
 both public plans, passed review, and been merged into local public `main`.
 Create one separate Hub worktree and execute Tasks 1–4 entirely there. Use the
 merged public binary at
-`/Users/slavatang/.local/share/agent-sync/bin/agent-sync` with
+`$HOME/.local/share/agent-sync/bin/agent-sync` with
 `AGENT_HUB_ROOT="$PWD"`. Merge only the Hub worktree in Task 5. Neither
 repository is pushed before the final joint gate.
 
@@ -47,7 +47,7 @@ repository is pushed before the final joint gate.
 ### Task 1: Establish Hub governance tests before policy changes
 
 **Files:**
-- Create: `/Users/slavatang/.config/agent-hub/tests/test_hub_governance.py`
+- Create: `$HOME/.config/agent-hub/tests/test_hub_governance.py`
 
 **Interfaces:**
 - `load_json(relative: str) -> dict`.
@@ -156,7 +156,7 @@ git commit -m "test: add Agent Hub governance invariants"
 ### Task 2: Check MinerU and migrate the deprecated Obsidian package safely
 
 **Files:**
-- Modify: `/Users/slavatang/.config/agent-hub/mcp/shared-servers.json`
+- Modify: `$HOME/.config/agent-hub/mcp/shared-servers.json`
 
 **Interfaces:**
 - Consumes `agent-sync deps check|pin|smoke` from public version 1.11.0.
@@ -170,7 +170,7 @@ the three reviewed version variables remain in scope. File edits still use
 - [ ] **Step 1: Run a fresh registry check and inspect primary metadata**
 
 ```bash
-AGENT_HUB_ROOT="$PWD" /Users/slavatang/.local/share/agent-sync/bin/agent-sync deps check --json --refresh
+AGENT_HUB_ROOT="$PWD" "$HOME/.local/share/agent-sync/bin/agent-sync" deps check --json --refresh
 ```
 
 For each candidate, open only the returned primary registry/source metadata.
@@ -197,8 +197,8 @@ exporting; do not change later commands independently.
 - [ ] **Step 2: Dry-run both pins**
 
 ```bash
-AGENT_HUB_ROOT="$PWD" /Users/slavatang/.local/share/agent-sync/bin/agent-sync deps pin mineru "$MINERU_VERSION" --dry-run
-AGENT_HUB_ROOT="$PWD" /Users/slavatang/.local/share/agent-sync/bin/agent-sync deps pin obsidian "$LEGACY_OBSIDIAN_VERSION" --dry-run
+AGENT_HUB_ROOT="$PWD" "$HOME/.local/share/agent-sync/bin/agent-sync" deps pin mineru "$MINERU_VERSION" --dry-run
+AGENT_HUB_ROOT="$PWD" "$HOME/.local/share/agent-sync/bin/agent-sync" deps pin obsidian "$LEGACY_OBSIDIAN_VERSION" --dry-run
 git diff -- mcp/shared-servers.json
 ```
 
@@ -209,8 +209,8 @@ renamed by `deps pin`, proving the package-identity safety boundary.
 - [ ] **Step 3: Apply and smoke-test the MinerU exact pin**
 
 ```bash
-AGENT_HUB_ROOT="$PWD" /Users/slavatang/.local/share/agent-sync/bin/agent-sync deps pin mineru "$MINERU_VERSION" --apply
-AGENT_HUB_ROOT="$PWD" /Users/slavatang/.local/share/agent-sync/bin/agent-sync deps smoke mineru --target cursor --timeout 60
+AGENT_HUB_ROOT="$PWD" "$HOME/.local/share/agent-sync/bin/agent-sync" deps pin mineru "$MINERU_VERSION" --apply
+AGENT_HUB_ROOT="$PWD" "$HOME/.local/share/agent-sync/bin/agent-sync" deps smoke mineru --target cursor --timeout 60
 ```
 
 Expected: initialize succeeds and returns a positive tool count.
@@ -233,8 +233,8 @@ numeric value, not the shell placeholder. Then run with a temporary empty vault:
 ```bash
 OBSIDIAN_VAULT="$(mktemp -d)"
 export OBSIDIAN_VAULT
-AGENT_HUB_ROOT="$PWD" /Users/slavatang/.local/share/agent-sync/bin/agent-sync deps check --json --refresh
-AGENT_HUB_ROOT="$PWD" /Users/slavatang/.local/share/agent-sync/bin/agent-sync deps smoke obsidian --timeout 60
+AGENT_HUB_ROOT="$PWD" "$HOME/.local/share/agent-sync/bin/agent-sync" deps check --json --refresh
+AGENT_HUB_ROOT="$PWD" "$HOME/.local/share/agent-sync/bin/agent-sync" deps smoke obsidian --timeout 60
 rmdir "$OBSIDIAN_VAULT"
 unset OBSIDIAN_VAULT
 ```
@@ -272,8 +272,8 @@ git commit -m "chore: migrate Obsidian MCP package"
 ### Task 3: Replace the absolute recursion ban with guarded two-level delegation
 
 **Files:**
-- Modify: `/Users/slavatang/.config/agent-hub/tests/test_hub_governance.py`
-- Modify: `/Users/slavatang/.config/agent-hub/rules/bounded-orchestration.md`
+- Modify: `$HOME/.config/agent-hub/tests/test_hub_governance.py`
+- Modify: `$HOME/.config/agent-hub/rules/bounded-orchestration.md`
 
 **Interfaces:**
 - Synchronized rule text only; no Codex concurrency/model setting changes.
@@ -327,10 +327,10 @@ git commit -m "policy: allow guarded second-level delegation"
 ### Task 4: Add Agent-reviewed dependency maintenance guidance
 
 **Files:**
-- Modify: `/Users/slavatang/.config/agent-hub/tests/test_hub_governance.py`
-- Create: `/Users/slavatang/.config/agent-hub/rules/mcp-dependency-maintenance.md`
-- Modify: `/Users/slavatang/.config/agent-hub/TOOLING.zh-CN.md`
-- Modify: `/Users/slavatang/.config/agent-hub/USAGE.zh-CN.md`
+- Modify: `$HOME/.config/agent-hub/tests/test_hub_governance.py`
+- Create: `$HOME/.config/agent-hub/rules/mcp-dependency-maintenance.md`
+- Modify: `$HOME/.config/agent-hub/TOOLING.zh-CN.md`
+- Modify: `$HOME/.config/agent-hub/USAGE.zh-CN.md`
 
 **Interfaces:**
 - New synchronized rule owns only maintenance ordering, not MCP ownership.
@@ -399,9 +399,9 @@ git commit -m "docs: add guarded MCP maintenance route"
 - [ ] **Step 1: Re-run both repositories' tests before merge**
 
 ```bash
-git -C /Users/slavatang/.local/share/agent-sync status --short --branch
-/Users/slavatang/.local/share/agent-sync/bin/agent-sync test
-/Users/slavatang/.local/share/agent-sync/bin/agent-sync audit
+git -C "$HOME/.local/share/agent-sync" status --short --branch
+"$HOME/.local/share/agent-sync/bin/agent-sync" test
+"$HOME/.local/share/agent-sync/bin/agent-sync" audit
 git status --short --branch
 python3 -m unittest discover -s tests -v
 ```
@@ -422,7 +422,7 @@ Hub main worktrees are clean after the Hub merge.
 - [ ] **Step 4: Run the update decision before synchronization**
 
 ```bash
-/Users/slavatang/.local/bin/agent-sync deps check --json --refresh
+"$HOME/.local/bin/agent-sync" deps check --json --refresh
 ```
 
 If a new candidate appeared since Task 2, do not silently apply it. Re-enter
@@ -443,8 +443,8 @@ import sys
 from pathlib import Path
 
 home = Path.home()
-hub = Path("/Users/slavatang/.config/agent-hub")
-scripts = Path("/Users/slavatang/.local/share/agent-sync/scripts")
+hub = Path.home() / ".config/agent-hub"
+scripts = Path.home() / ".local/share/agent-sync/scripts"
 sys.path.insert(0, str(scripts))
 from config_inventory import _source_specs
 
@@ -489,13 +489,13 @@ print(digest.hexdigest())
 PY
 }
 
-/Users/slavatang/.local/bin/agent-sync all
+"$HOME/.local/bin/agent-sync" all
 AFTER_ONE="$(managed_digest)"
-/Users/slavatang/.local/bin/agent-sync all
+"$HOME/.local/bin/agent-sync" all
 AFTER_TWO="$(managed_digest)"
 test "$AFTER_ONE" = "$AFTER_TWO"
-/Users/slavatang/.local/bin/agent-sync status
-/Users/slavatang/.local/bin/agent-sync verify --strict --scope managed
+"$HOME/.local/bin/agent-sync" status
+"$HOME/.local/bin/agent-sync" verify --strict --scope managed
 ```
 
 The first run may intentionally change coverage from the pre-sync state. The
@@ -505,7 +505,7 @@ diagnosed before publication.
 - [ ] **Step 6: Run full machine health separately**
 
 ```bash
-/Users/slavatang/.local/bin/agent-sync doctor --runtime --strict
+"$HOME/.local/bin/agent-sync" doctor --runtime --strict
 ```
 
 If a tool-only/product-owned runtime fails, report its owner and repair only
@@ -520,11 +520,11 @@ to the Hub.
 - [ ] **Step 1: Final privacy and repository checks**
 
 ```bash
-/Users/slavatang/.local/bin/agent-sync audit
-git -C /Users/slavatang/.local/share/agent-sync status --short --branch
-git -C /Users/slavatang/.config/agent-hub status --short --branch
-git -C /Users/slavatang/.local/share/agent-sync log --oneline --decorate -n 12
-git -C /Users/slavatang/.config/agent-hub log --oneline --decorate -n 12
+"$HOME/.local/bin/agent-sync" audit
+git -C "$HOME/.local/share/agent-sync" status --short --branch
+git -C "$HOME/.config/agent-hub" status --short --branch
+git -C "$HOME/.local/share/agent-sync" log --oneline --decorate -n 12
+git -C "$HOME/.config/agent-hub" log --oneline --decorate -n 12
 ```
 
 Confirm no secret-bearing or unrelated file is staged and each local main is
@@ -533,7 +533,7 @@ only ahead of its intended origin.
 - [ ] **Step 2: Push the public tool**
 
 ```bash
-git -C /Users/slavatang/.local/share/agent-sync push origin main
+git -C "$HOME/.local/share/agent-sync" push origin main
 ```
 
 Confirm the remote-tracking branch reaches the same commit.
@@ -541,7 +541,7 @@ Confirm the remote-tracking branch reaches the same commit.
 - [ ] **Step 3: Push the already-reviewed private Hub commit directly**
 
 ```bash
-git -C /Users/slavatang/.config/agent-hub push origin main
+git -C "$HOME/.config/agent-hub" push origin main
 ```
 
 Do not call `agent-sync push` here because its `git add -A` behavior could stage
@@ -551,9 +551,9 @@ commit.
 - [ ] **Step 4: Final fresh verification after push**
 
 ```bash
-/Users/slavatang/.local/bin/agent-sync status
-/Users/slavatang/.local/bin/agent-sync verify --strict --scope managed
-/Users/slavatang/.local/bin/agent-sync doctor --runtime --strict
+"$HOME/.local/bin/agent-sync" status
+"$HOME/.local/bin/agent-sync" verify --strict --scope managed
+"$HOME/.local/bin/agent-sync" doctor --runtime --strict
 ```
 
 Report exact test counts, runtime findings if any, public/Hub commit hashes, and
