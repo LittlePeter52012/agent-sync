@@ -333,6 +333,12 @@ class McpDependencyTests(unittest.TestCase):
                 FakeResponse(b"{}", content_length=2 * 1024 * 1024 + 1),
             ),
             ("streamed", FakeResponse(b" " * (2 * 1024 * 1024 + 1))),
+            (
+                "deceptive declared length",
+                FakeResponse(
+                    b" " * (2 * 1024 * 1024 + 1), content_length=2
+                ),
+            ),
         )
 
         for label, response in fixtures:
@@ -352,8 +358,17 @@ class McpDependencyTests(unittest.TestCase):
         def timeout_opener(_url, timeout):
             raise TimeoutError(secret)
 
-        def http_opener(url, timeout):
-            raise HTTPError(url, 500, secret, {}, io.BytesIO(secret.encode()))
+        http_body = TrackingBody(secret.encode())
+        http_error = HTTPError(
+            "https://registry.npmjs.org/example",
+            500,
+            secret,
+            {},
+            http_body,
+        )
+
+        def http_opener(_url, timeout):
+            raise http_error
 
         malformed = FakeResponse(f'{{"secret": "{secret}"'.encode())
         fixtures = (
@@ -380,6 +395,9 @@ class McpDependencyTests(unittest.TestCase):
                     {"registry request failed", "invalid registry response"},
                 )
 
+        self.assertTrue(http_body.closed)
+        self.assertFalse(http_body.read_called)
+
 
 class FakeResponse(io.BytesIO):
     def __init__(self, payload, content_length=None):
@@ -396,6 +414,16 @@ class ReadErrorResponse(FakeResponse):
 
     def read(self, _size=-1):
         raise OSError(self.message)
+
+
+class TrackingBody(io.BytesIO):
+    def __init__(self, payload):
+        super().__init__(payload)
+        self.read_called = False
+
+    def read(self, size=-1):
+        self.read_called = True
+        return super().read(size)
 
 
 if __name__ == "__main__":

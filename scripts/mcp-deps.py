@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
 
@@ -36,6 +37,12 @@ def default_fetch_json(url: str, opener=None) -> object:
     open_url = urlopen if opener is None else opener
     try:
         response = open_url(url, timeout=8)
+    except HTTPError as error:
+        try:
+            error.close()
+        except Exception:
+            pass
+        raise DependencyError("registry request failed") from None
     except Exception:
         raise DependencyError("registry request failed") from None
 
