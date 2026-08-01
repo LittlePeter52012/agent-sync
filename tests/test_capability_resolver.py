@@ -272,6 +272,28 @@ class CapabilityResolverTests(unittest.TestCase):
         )
         self.assertNotIn("cloudflare-local", resolution.suppressed_mcp)
 
+    def test_same_name_different_transport_is_not_automatic_plugin_ownership(self):
+        plugin = self.home / ".cursor/plugins/local/conflict"
+        plugin.mkdir(parents=True)
+        (plugin / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared-mcp": {
+                            "type": "http",
+                            "url": "https://different.example/mcp",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertNotIn("shared-mcp", resolution.suppressed_mcp)
+        self.assertNotIn("shared-mcp", resolution.mcp_owners)
+
     def test_plugin_disappearance_restores_conditional_capability(self):
         self.cursor_plugin("cloudflare", "abc", skill="cloudflare")
 

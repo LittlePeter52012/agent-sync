@@ -363,6 +363,22 @@ class ConfigInventoryTests(unittest.TestCase):
         trace = module.trace_mcp("plugin-owned", self.home, self.hub)
         self.assertEqual(trace["ownership"]["cursor"], "plugin-owned")
 
+    def test_same_name_different_transport_plugin_does_not_cover_shared_mcp(self):
+        plugin = self.home / ".cursor/plugins/local/conflict"
+        plugin.mkdir(parents=True)
+        (plugin / ".mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "/bin/echo"}}}
+            ),
+            encoding="utf-8",
+        )
+
+        module = load_inventory_module()
+        coverage = module.resolve_mcp_coverage("cursor", self.home, self.hub)
+
+        self.assertEqual(coverage["shared"]["state"], "missing")
+        self.assertEqual(coverage["shared"]["owner"], "hub-managed")
+
     def test_sources_and_trace_entrypoints_emit_safe_json(self):
         cursor = self.home / ".cursor"
         cursor.mkdir(parents=True)

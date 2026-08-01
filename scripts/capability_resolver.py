@@ -313,8 +313,7 @@ def resolve_target_policy(
             if skill in skills:
                 suppressed_skills.add(skill)
                 skill_owners[skill] = owner
-        plugin_names = {name.casefold() for name in source.mcp_servers}
-        for name, _identity in shared_identities.items():
+        for name in shared_identities:
             canonical = shared_configs.get(name, {})
             transport_match = any(
                 isinstance(config, dict)
@@ -322,7 +321,7 @@ def resolve_target_policy(
                 and mcp_identity_matches(config, canonical)
                 for config in source.mcp_servers.values()
             )
-            if name in plugin_names or transport_match:
+            if transport_match:
                 suppressed_mcp.add(name)
                 mcp_owners[name] = owner
 
