@@ -46,8 +46,10 @@ class VerifyScopeTests(unittest.TestCase):
             "HOME": str(self.home),
             "AGENT_HUB_ROOT": str(self.hub),
             "AGENT_SYNC_RUNTIME_TIMEOUT": "1",
+            "HERMES_HOME": str(root / "hermes"),
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         }
+        self.env.pop("CLAUDE_BIN", None)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -177,6 +179,57 @@ class VerifyScopeTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertEqual(set(calls), {"mcp list"})
         self.assertIn("broken-product-runtime", full.stdout)
+
+    def test_full_sync_fixture_ignores_ambient_external_overrides(self):
+        with tempfile.TemporaryDirectory() as ambient_root:
+            ambient = Path(ambient_root)
+            hermes_home = ambient / "hermes"
+            hermes_home.mkdir()
+            hermes_config = hermes_home / "config.yaml"
+            original = b"skills:\n  external_dirs: []\n"
+            hermes_config.write_bytes(original)
+
+            claude_log = ambient / "claude.log"
+            claude = ambient / "claude"
+            claude.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$*" >> "$AMBIENT_CLAUDE_LOG"\n',
+                encoding="utf-8",
+            )
+            claude.chmod(0o755)
+            env = os.environ | {
+                "AMBIENT_CLAUDE_LOG": str(claude_log),
+                "CLAUDE_BIN": str(claude),
+                "HERMES_HOME": str(hermes_home),
+            }
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-m",
+                    "unittest",
+                    (
+                        "tests.test_verify_scopes.VerifyScopeTests."
+                        "test_sync_stays_structural_while_all_runs_managed_runtime_gate"
+                    ),
+                    "-v",
+                ],
+                cwd=REPO,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(
+                result.returncode,
+                0,
+                result.stdout + result.stderr,
+            )
+            self.assertEqual(
+                hermes_config.read_bytes(),
+                original,
+            )
+            self.assertFalse(claude_log.exists())
 
 
 if __name__ == "__main__":
