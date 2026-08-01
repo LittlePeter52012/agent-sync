@@ -35,20 +35,50 @@ begin = f"<!-- agent-sync:begin:{block_name} -->"
 end = f"<!-- agent-sync:end:{block_name} -->"
 
 text = target.read_text(encoding="utf-8")
-rule = rule_path.read_text(encoding="utf-8").strip()
+rule = rule_path.read_text(encoding="utf-8")
+
+def trim_trailing_separator(value):
+    value = re.sub(r"(?:\r?\n[ \t]*)+$", "", value)
+    return value if value.strip() else ""
+
+def trim_leading_separator(value):
+    value = re.sub(r"^(?:[ \t]*\r?\n)+", "", value)
+    return value if value.strip() else ""
+
+def join_without_fragment(before, after):
+    before = trim_trailing_separator(before)
+    after = trim_leading_separator(after)
+    return before + ("\n\n" if before and after else "") + after
+
+def remove_matches(value, pattern):
+    while match := pattern.search(value):
+        value = join_without_fragment(
+            value[:match.start()],
+            value[match.end():],
+        )
+    return value
+
 # Remove any previous managed block first. The filename-based marker is stable
 # even if the heading inside a rule later changes.
-text = re.sub(rf"\n?{re.escape(begin)}.*?{re.escape(end)}\n?", "\n", text, flags=re.DOTALL)
+text = remove_matches(
+    text,
+    re.compile(rf"{re.escape(begin)}.*?{re.escape(end)}", flags=re.DOTALL),
+)
 # Remove legacy unmarked copies written by releases before managed markers.
-text = text.replace(rule, "")
+legacy_rule = rule.strip()
+if legacy_rule:
+    text = remove_matches(text, re.compile(re.escape(legacy_rule)))
 if priority:
-    text = text.replace(priority.strip(), "")
-text = text.rstrip()
+    text = remove_matches(text, re.compile(re.escape(priority.strip())))
+text = trim_trailing_separator(text)
 block = f"{begin}\n"
 if priority:
     block += f"{priority.strip()}\n\n"
-block += f"{rule}\n{end}"
-text += f"\n\n{block}\n"
+block += rule
+if not block.endswith("\n"):
+    block += "\n"
+block += end
+text = f"{text}\n\n{block}\n" if text else f"{block}\n"
 target.write_text(text, encoding="utf-8")
 print(f"  ✓ injected → {target}")
 PY
@@ -83,7 +113,7 @@ for rule_file in "$RULES_DIR"/*.md; do
 from pathlib import Path
 import sys
 target = Path(sys.argv[1])
-rule = Path(sys.argv[2]).read_text(encoding="utf-8").strip()
+rule = Path(sys.argv[2]).read_text(encoding="utf-8")
 name = sys.argv[3]
 body = f"""---
 name: {name}
@@ -91,8 +121,9 @@ description: Agent rule synced by agent-sync from personal hub.
 applyTo: "**"
 ---
 
-{rule}
-"""
+""" + rule
+if not body.endswith("\n"):
+    body += "\n"
 target.write_text(body, encoding="utf-8")
 print(f"  ✓ injected → {target}")
 PY
