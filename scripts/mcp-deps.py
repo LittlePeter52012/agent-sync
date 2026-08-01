@@ -523,6 +523,36 @@ def _validate_cache(payload: object, now: float) -> dict[str, object] | None:
     return payload
 
 
+def _reconcile_cached_dependencies(
+    dependencies: list[dict[str, object]],
+    specs: list[DependencySpec],
+) -> tuple[list[dict[str, object]], bool]:
+    desired = {
+        (
+            spec.server,
+            spec.ecosystem,
+            spec.package,
+            spec.version,
+            spec.pin_state,
+        )
+        for spec in specs
+    }
+    reconciled = [
+        record
+        for record in dependencies
+        if (
+            record["server"],
+            record["ecosystem"],
+            record["package"],
+            record["current"],
+            record["pin_state"],
+        )
+        in desired
+    ]
+    complete = len(reconciled) == len(dependencies) == len(specs)
+    return reconciled, complete
+
+
 def _read_cache(now: float | None = None) -> dict[str, object] | None:
     directory_descriptor = _open_cache_dir(create=False)
     if directory_descriptor is None:
@@ -1521,17 +1551,23 @@ def main(
         if args.command == "check":
             if args.cached and args.refresh:
                 raise DependencyError("--cached and --refresh cannot be combined")
+            specs = discover_dependencies(hub)
             cached = None if args.refresh else _read_cache()
             if cached is None and args.cached:
                 return 0
             if cached is None:
-                dependencies = check_dependencies(
-                    discover_dependencies(hub), fetch_json
-                )
+                dependencies = check_dependencies(specs, fetch_json)
                 checked_at = time.time()
                 _write_cache(dependencies, checked_at)
             else:
-                dependencies = cached["dependencies"]
+                dependencies, complete = _reconcile_cached_dependencies(
+                    cached["dependencies"],
+                    specs,
+                )
+                if not args.cached and not complete:
+                    dependencies = check_dependencies(specs, fetch_json)
+                    checked_at = time.time()
+                    _write_cache(dependencies, checked_at)
             _print_dependency_check(
                 dependencies, as_json=args.as_json, quiet=args.quiet
             )

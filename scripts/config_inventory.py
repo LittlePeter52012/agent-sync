@@ -36,6 +36,31 @@ def _read_json(path: Path, bucket: str) -> tuple[dict[str, Any], bool]:
     return (value if isinstance(value, dict) else {}), not isinstance(value, dict)
 
 
+def read_canonical_shared_mcp(
+    hub: Path,
+) -> tuple[dict[str, Any], str | None]:
+    path = hub / "mcp" / "shared-servers.json"
+    try:
+        exists = path.exists()
+        dangling_symlink = not exists and path.is_symlink()
+    except OSError:
+        return {}, "unreadable"
+    if not exists:
+        return ({}, "unreadable") if dangling_symlink else ({}, None)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        return {}, "unreadable"
+    except json.JSONDecodeError:
+        return {}, "invalid-json"
+    if not isinstance(document, dict):
+        return {}, "invalid-root"
+    servers = document.get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}, "invalid-servers"
+    return servers, None
+
+
 def _read_codex(path: Path) -> tuple[dict[str, Any], bool]:
     if not path.exists():
         return {}, False
@@ -88,8 +113,8 @@ def _read_retired(hub: Path) -> set[str]:
 
 
 def _read_shared(hub: Path) -> set[str]:
-    servers, invalid = _read_json(hub / "mcp" / "shared-servers.json", "mcpServers")
-    return set() if invalid else {str(name).lower() for name in servers}
+    servers, issue = read_canonical_shared_mcp(hub)
+    return set() if issue else {str(name).lower() for name in servers}
 
 
 def _command(config: dict[str, Any]) -> str | None:
@@ -185,10 +210,19 @@ def _duplicate_names(names: list[str]) -> list[list[str]]:
     ]
 
 
-def collect_inventory(home: Path, hub: Path) -> list[dict[str, Any]]:
+def collect_inventory(
+    home: Path,
+    hub: Path,
+    *,
+    shared: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Return only metadata needed to assess MCP source health."""
     retired_names = _read_retired(hub)
-    shared_names = _read_shared(hub)
+    shared_names = (
+        _read_shared(hub)
+        if shared is None
+        else {str(name).lower() for name in shared}
+    )
     records: list[dict[str, Any]] = []
     for tool, label, path, bucket in _source_specs(home):
         if bucket == "toml":
@@ -280,14 +314,14 @@ def resolve_mcp_coverage(
     target: str,
     home: Path,
     hub: Path,
+    *,
+    shared: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Classify every shared MCP for a target without exposing configuration."""
-    shared, invalid = _read_json(
-        hub / "mcp" / "shared-servers.json",
-        "mcpServers",
-    )
-    if invalid:
-        return {}
+    if shared is None:
+        shared, issue = read_canonical_shared_mcp(hub)
+        if issue:
+            return {}
     servers, parse_error = _target_servers(target, home)
     by_name: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for name, config in servers.items():

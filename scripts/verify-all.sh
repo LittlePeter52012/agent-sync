@@ -74,21 +74,30 @@ fi
 
 echo ""
 echo "[mcp]"
-if [ -f "$HUB_ROOT/mcp/shared-servers.json" ]; then
+if [ -e "$HUB_ROOT/mcp/shared-servers.json" ] \
+    || [ -L "$HUB_ROOT/mcp/shared-servers.json" ]; then
     if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
 import sys
 from pathlib import Path
 
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
-from config_inventory import _source_specs, resolve_mcp_coverage
+from config_inventory import (
+    _source_specs,
+    read_canonical_shared_mcp,
+    resolve_mcp_coverage,
+)
 
 home = Path.home()
+shared, issue = read_canonical_shared_mcp(hub)
+if issue:
+    print("  ❌ Canonical shared MCP configuration is invalid or unreadable.")
+    raise SystemExit(1)
 
 failures = 0
 accepted = {"hub-managed", "plugin-owned", "excluded"}
 for target, label, _path, _bucket in _source_specs(home):
-    coverage = resolve_mcp_coverage(target, home, hub)
+    coverage = resolve_mcp_coverage(target, home, hub, shared=shared)
     count = sum(record["state"] in accepted for record in coverage.values())
     total = len(coverage)
     marker = "✅" if count == total else "❌"

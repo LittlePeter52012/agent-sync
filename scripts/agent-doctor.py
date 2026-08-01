@@ -17,7 +17,11 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from capability_resolver import active_plugin_sources, resolve_target_policy
-from config_inventory import collect_inventory, resolve_mcp_coverage
+from config_inventory import (
+    collect_inventory,
+    read_canonical_shared_mcp,
+    resolve_mcp_coverage,
+)
 from sync_hermes import is_registered as hermes_skills_registered
 
 
@@ -67,6 +71,18 @@ def policy_file_findings() -> list[dict[str, str]]:
     return []
 
 
+def canonical_shared_mcp_findings(issue: str | None) -> list[dict[str, str]]:
+    if issue is None:
+        return []
+    return [
+        make_finding(
+            "Canonical shared MCP configuration is invalid or unreadable.",
+            scope="policy",
+            owner="hub",
+        )
+    ]
+
+
 def read_manifest_skills() -> list[str]:
     path = HUB / "manifest.yaml"
     if not path.exists():
@@ -84,24 +100,13 @@ def read_manifest_skills() -> list[str]:
 
 
 def read_shared_mcp() -> list[str]:
-    path = HUB / "mcp" / "shared-servers.json"
-    if not path.exists():
-        return []
-    try:
-        return list(json.loads(path.read_text(encoding="utf-8")).get("mcpServers", {}))
-    except json.JSONDecodeError:
-        return []
+    shared, issue = read_canonical_shared_mcp(HUB)
+    return [] if issue else list(shared)
 
 
 def read_shared_mcp_config() -> dict[str, dict[str, Any]]:
-    path = HUB / "mcp" / "shared-servers.json"
-    if not path.exists():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8")).get("mcpServers", {})
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(value, dict):
+    value, issue = read_canonical_shared_mcp(HUB)
+    if issue:
         return {}
     return {
         str(name): cfg
@@ -170,10 +175,15 @@ def local_variable_names() -> set[str]:
     return names
 
 
-def mcp_usability_findings() -> list[dict[str, str]]:
+def mcp_usability_findings(
+    shared: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     resolved = local_variable_names()
-    for server_name, config in read_shared_mcp_config().items():
+    configs = read_shared_mcp_config() if shared is None else shared
+    for server_name, config in configs.items():
+        if not isinstance(config, dict):
+            continue
         for variable in sorted(placeholder_names(config)):
             if variable not in resolved:
                 findings.append(
@@ -201,11 +211,18 @@ def mcp_usability_findings() -> list[dict[str, str]]:
     return findings
 
 
-def configured_mcp_findings() -> list[dict[str, str]]:
+def configured_mcp_findings(
+    shared: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     """Audit every configured MCP, including tool-only and retired entries."""
     findings: list[dict[str, str]] = []
-    for record in collect_inventory(HOME, HUB):
-        coverage = resolve_mcp_coverage(record["tool"], HOME, HUB)
+    for record in collect_inventory(HOME, HUB, shared=shared):
+        coverage = resolve_mcp_coverage(
+            record["tool"],
+            HOME,
+            HUB,
+            shared=shared,
+        )
         if record["parse_error"]:
             findings.append(
                 make_finding(
@@ -863,7 +880,9 @@ def hook_scope_findings() -> list[dict[str, str]]:
     return findings
 
 
-def mcp_scope_findings() -> list[dict[str, str]]:
+def mcp_scope_findings(
+    shared_config: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     path = HUB / "policies" / "tool-scopes.json"
     if not path.exists():
         return []
@@ -896,10 +915,17 @@ def mcp_scope_findings() -> list[dict[str, str]]:
     }
     inventory = {
         record["tool"]: record
-        for record in collect_inventory(HOME, HUB)
+        for record in collect_inventory(HOME, HUB, shared=shared_config)
         if not record["is_profile"]
     }
-    shared = {name.casefold() for name in read_shared_mcp()}
+    shared = {
+        name.casefold()
+        for name in (
+            read_shared_mcp()
+            if shared_config is None
+            else shared_config
+        )
+    }
     findings: list[dict[str, str]] = []
 
     for tool, policy in policies.items():
@@ -1119,13 +1145,20 @@ def cursor_loopback_http_findings(
     return findings, checked
 
 
-def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
+def runtime_mcp_findings(
+    shared: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, str]], list[str]]:
     """Run bounded, read-only CLI probes and keep only sanitized outcomes."""
     probes = [
         ("OpenCode", "opencode", "opencode", ["mcp", "list"], 30),
         ("Claude", "claude", "claude", ["mcp", "list"], 90),
     ]
-    cursor_coverage = resolve_mcp_coverage("cursor", HOME, HUB)
+    cursor_coverage = resolve_mcp_coverage(
+        "cursor",
+        HOME,
+        HUB,
+        shared=shared,
+    )
     findings, cursor_checked = cursor_loopback_http_findings(
         coverage=cursor_coverage,
     )
@@ -1137,7 +1170,12 @@ def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
         command = shutil.which(executable)
         if not command:
             continue
-        coverage = resolve_mcp_coverage(target, HOME, HUB)
+        coverage = resolve_mcp_coverage(
+            target,
+            HOME,
+            HUB,
+            shared=shared,
+        )
         checked.append(label)
         tool_timeout = os.environ.get(
             f"AGENT_SYNC_RUNTIME_TIMEOUT_{label.upper()}"
@@ -1308,7 +1346,10 @@ def count_mcp(names: set[str], shared: list[str]) -> dict[str, int]:
     return {"configured": len({name.lower() for name in names} & shared_lower), "expected": len(shared)}
 
 
-def vscode_profiles(shared: list[str]) -> list[dict[str, Any]]:
+def vscode_profiles(
+    shared: list[str],
+    shared_config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     root = HOME / "Library" / "Application Support" / "Code" / "User" / "profiles"
     if not root.exists():
         return []
@@ -1319,6 +1360,7 @@ def vscode_profiles(shared: list[str]) -> list[dict[str, Any]]:
             f"vscode:{profile.name}",
             HOME,
             HUB,
+            shared=shared_config,
         )
         accepted = {"hub-managed", "plugin-owned", "excluded"}
         profiles.append(
@@ -1357,7 +1399,11 @@ def capability_labels(name: str, config: Path) -> list[str]:
     return labels
 
 
-def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]:
+def target_records(
+    skills: list[str],
+    shared: list[str],
+    shared_config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     targets = [
         ("Codex / ChatGPT", "codex", "codex", "codex", HOME / ".codex" / "config.toml", HOME / ".codex" / "skills", "toml", ("ChatGPT.app",)),
         ("Claude", "claude", "claude", "claude", HOME / ".claude.json", HOME / ".claude" / "skills", "json", ("Claude.app",)),
@@ -1381,7 +1427,12 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
             skills,
         )
         coverage = (
-            resolve_mcp_coverage(mcp_target_key, HOME, HUB)
+            resolve_mcp_coverage(
+                mcp_target_key,
+                HOME,
+                HUB,
+                shared=shared_config,
+            )
             if kind != "none"
             else {}
         )
@@ -1408,7 +1459,7 @@ def target_records(skills: list[str], shared: list[str]) -> list[dict[str, Any]]
             "capabilities": capability_labels(name, config),
         }
         if name == "Copilot / VS Code":
-            record["profiles"] = vscode_profiles(shared)
+            record["profiles"] = vscode_profiles(shared, shared_config)
         records.append(record)
     hermes_home = Path(
         os.environ.get("HERMES_HOME", HOME / ".hermes")
@@ -1491,10 +1542,13 @@ def rule_findings() -> list[dict[str, str]]:
     return findings
 
 
-def effective_mcp_findings() -> list[dict[str, str]]:
+def effective_mcp_findings(
+    agents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     accepted = {"hub-managed", "plugin-owned", "excluded"}
-    for record in target_records([], read_shared_mcp()):
+    records = target_records([], read_shared_mcp()) if agents is None else agents
+    for record in records:
         for name, ownership in record.get("mcp_ownership", {}).items():
             state = ownership["state"]
             if state not in accepted:
@@ -1512,24 +1566,26 @@ def effective_mcp_findings() -> list[dict[str, str]]:
 
 def build_report(runtime: bool = False) -> dict[str, Any]:
     skills = read_manifest_skills()
-    shared = read_shared_mcp()
-    agents = target_records(skills, shared)
+    shared_config, shared_issue = read_canonical_shared_mcp(HUB)
+    shared = list(shared_config)
+    agents = target_records(skills, shared, shared_config)
     findings = (
         policy_file_findings()
+        + canonical_shared_mcp_findings(shared_issue)
         + rule_findings()
-        + mcp_usability_findings()
-        + configured_mcp_findings()
+        + mcp_usability_findings(shared_config)
+        + configured_mcp_findings(shared_config)
         + sensitive_config_findings()
-        + effective_mcp_findings()
+        + effective_mcp_findings(agents)
         + plugin_scope_findings()
         + codex_orchestration_findings()
         + skill_dependency_findings()
         + hook_scope_findings()
-        + mcp_scope_findings()
+        + mcp_scope_findings(shared_config)
     )
     runtime_checked: list[str] = []
     if runtime:
-        runtime_findings, runtime_checked = runtime_mcp_findings()
+        runtime_findings, runtime_checked = runtime_mcp_findings(shared_config)
         findings.extend(runtime_findings)
     for agent in agents:
         local_owner = {

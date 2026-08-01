@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -39,6 +40,21 @@ class ConfigInventoryTests(unittest.TestCase):
 
     def tearDown(self):
         self.tempdir.cleanup()
+
+    def test_canonical_shared_reader_sanitizes_unreadable_metadata(self):
+        module = load_inventory_module()
+        with mock.patch.object(
+            module.Path,
+            "exists",
+            side_effect=PermissionError("PRIVATE-SHARED-PATH"),
+        ):
+            try:
+                shared, issue = module.read_canonical_shared_mcp(self.hub)
+            except OSError:
+                self.fail("canonical shared reader propagated a metadata error")
+
+        self.assertEqual(shared, {})
+        self.assertEqual(issue, "unreadable")
 
     def test_rank_sources_prefers_healthy_source_over_newer_broken_source(self):
         cursor = self.home / ".cursor"

@@ -1206,13 +1206,26 @@ class McpDependencyCliTests(unittest.TestCase):
             "profile-a/mineru-open-mcp 1.0.21 -> 1.0.22\n",
         )
 
-    def test_empty_dependency_cache_is_valid_and_does_not_fetch(self):
+    def test_empty_dependency_cache_refreshes_for_current_hub_dependencies(self):
+        self.write_cache({"checked_at": time.time(), "dependencies": []})
+
+        rc, stdout, stderr = self.invoke_main("check", "--json")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(len(self.fetch_calls), 1)
+        self.assertEqual(
+            json.loads(stdout)["dependencies"][0]["server"],
+            "mineru",
+        )
+
+    def test_empty_dependency_cache_is_reused_for_empty_hub(self):
+        self.shared_path.write_text('{"mcpServers": {}}', encoding="utf-8")
         self.write_cache({"checked_at": time.time(), "dependencies": []})
 
         rc, stdout, stderr = self.invoke_main(
             "check",
             "--json",
-            fetch_json=lambda _url: self.fail("valid empty cache must not fetch"),
+            fetch_json=lambda _url: self.fail("matching empty cache must not fetch"),
         )
 
         self.assertEqual(rc, 0, stderr)
@@ -1260,6 +1273,134 @@ class McpDependencyCliTests(unittest.TestCase):
         self.assertEqual(
             stderr,
             "MCP dependency update available: mineru/mineru-open-mcp 1.0.21 -> 1.0.22\n",
+        )
+
+    def test_cached_quiet_drops_records_not_bound_to_current_hub_without_fetching(self):
+        fixtures = {
+            "post-pin": {
+                "mcpServers": {
+                    "mineru": {
+                        "command": "uvx",
+                        "args": ["mineru-open-mcp==1.0.22"],
+                    }
+                }
+            },
+            "removed": {"mcpServers": {}},
+            "renamed-server": {
+                "mcpServers": {
+                    "mineru-renamed": {
+                        "command": "uvx",
+                        "args": ["mineru-open-mcp==1.0.21"],
+                    }
+                }
+            },
+            "migrated-package": {
+                "mcpServers": {
+                    "mineru": {
+                        "command": "uvx",
+                        "args": ["replacement-mcp==1.0.21"],
+                    }
+                }
+            },
+            "migrated-ecosystem": {
+                "mcpServers": {
+                    "mineru": {
+                        "command": "npx",
+                        "args": ["mineru-open-mcp@1.0.21"],
+                    }
+                }
+            },
+            "changed-pin-state": {
+                "mcpServers": {
+                    "mineru": {
+                        "command": "uvx",
+                        "args": ["mineru-open-mcp"],
+                    }
+                }
+            },
+        }
+        for label, document in fixtures.items():
+            with self.subTest(label=label):
+                self.shared_path.write_text(
+                    json.dumps(document),
+                    encoding="utf-8",
+                )
+                self.write_cache(self.safe_cached_update())
+
+                rc, stdout, stderr = self.invoke_main(
+                    "check",
+                    "--cached",
+                    "--quiet",
+                    fetch_json=lambda _url: self.fail(
+                        "cached check must not fetch"
+                    ),
+                )
+
+                self.assertEqual(rc, 0, stderr)
+                self.assertEqual(stdout + stderr, "")
+
+    def test_ordinary_check_refreshes_cache_after_current_hub_pin_changes(self):
+        self.shared_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "mineru": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.22"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.write_cache(self.safe_cached_update())
+
+        rc, stdout, stderr = self.invoke_main("check", "--json")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(len(self.fetch_calls), 1)
+        dependencies = json.loads(stdout)["dependencies"]
+        self.assertEqual(dependencies[0]["current"], "1.0.22")
+        self.assertEqual(dependencies[0]["status"], "current")
+        self.assertEqual(
+            json.loads(self.cache_path.read_text(encoding="utf-8"))[
+                "dependencies"
+            ],
+            dependencies,
+        )
+
+    def test_ordinary_check_refreshes_incomplete_cache(self):
+        self.shared_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "profile-a": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.21"],
+                        },
+                        "profile-b": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.21"],
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        incomplete = self.safe_cached_update()
+        incomplete["dependencies"][0]["server"] = "profile-a"
+        self.write_cache(incomplete)
+
+        rc, stdout, stderr = self.invoke_main("check", "--json")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(len(self.fetch_calls), 2)
+        self.assertEqual(
+            [
+                record["server"]
+                for record in json.loads(stdout)["dependencies"]
+            ],
+            ["profile-a", "profile-b"],
         )
 
     def test_cached_quiet_ignores_invalid_cache_without_leaking_or_fetching(self):
@@ -1751,7 +1892,7 @@ class McpDependencyCliTests(unittest.TestCase):
             marker, operational_error.stdout + operational_error.stderr
         )
 
-    def test_only_all_prints_cached_dependency_advisory_without_mutating_hub(self):
+    def test_all_drops_cached_advisory_for_empty_hub_without_mutating_hub(self):
         self.shared_path.write_text('{"mcpServers": {}}', encoding="utf-8")
         before = self.shared_path.read_bytes()
 
@@ -1767,7 +1908,9 @@ class McpDependencyCliTests(unittest.TestCase):
             "MCP dependency update available", sync.stdout + sync.stderr
         )
         self.assertEqual(all_run.returncode, 0, all_run.stdout + all_run.stderr)
-        self.assertIn("MCP dependency update available", all_run.stderr)
+        self.assertNotIn(
+            "MCP dependency update available", all_run.stdout + all_run.stderr
+        )
         self.assertEqual(self.shared_path.read_bytes(), before)
 
     def test_all_does_not_block_on_fifo_dependency_cache(self):

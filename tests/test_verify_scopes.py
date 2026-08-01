@@ -153,6 +153,89 @@ class VerifyScopeTests(unittest.TestCase):
         result = self.run_doctor("--strict", "--scope", "managed")
         self.assertEqual(result.returncode, 1)
 
+    def test_managed_doctor_rejects_invalid_canonical_shared_config_once(self):
+        shared = self.hub / "mcp" / "shared-servers.json"
+        marker = "PRIVATE-SHARED-CONTENT"
+        fixtures = {
+            "invalid-json": (f'{{"mcpServers": "{marker}"'.encode(), False),
+            "root-not-object": (json.dumps([marker]).encode(), False),
+            "mcp-servers-not-object": (
+                json.dumps({"mcpServers": marker}).encode(),
+                False,
+            ),
+            "unreadable": (marker.encode(), True),
+        }
+        for label, (content, as_directory) in fixtures.items():
+            with self.subTest(label=label):
+                if shared.is_dir():
+                    shared.rmdir()
+                else:
+                    shared.unlink(missing_ok=True)
+                if as_directory:
+                    shared.mkdir()
+                else:
+                    shared.write_bytes(content)
+
+                result = self.run_doctor("--strict", "--scope", "managed")
+
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertTrue(
+                    result.stdout.lstrip().startswith("{"),
+                    result.stderr,
+                )
+                report = json.loads(result.stdout)
+                findings = [
+                    item
+                    for item in report["findings"]
+                    if item["message"].startswith(
+                        "Canonical shared MCP configuration"
+                    )
+                ]
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0]["scope"], "policy")
+                self.assertEqual(findings[0]["owner"], "hub")
+                self.assertNotIn(marker, result.stdout + result.stderr)
+                self.assertNotIn(str(shared), result.stdout + result.stderr)
+
+    def test_structural_verify_rejects_invalid_canonical_shared_config_once(self):
+        shared = self.hub / "mcp" / "shared-servers.json"
+        marker = "PRIVATE-SHARED-CONTENT"
+        fixtures = {
+            "invalid-json": (f'{{"mcpServers": "{marker}"'.encode(), False),
+            "root-not-object": (json.dumps([marker]).encode(), False),
+            "mcp-servers-not-object": (
+                json.dumps({"mcpServers": marker}).encode(),
+                False,
+            ),
+            "unreadable": (marker.encode(), True),
+        }
+        for label, (content, as_directory) in fixtures.items():
+            with self.subTest(label=label):
+                if shared.is_dir():
+                    shared.rmdir()
+                else:
+                    shared.unlink(missing_ok=True)
+                if as_directory:
+                    shared.mkdir()
+                else:
+                    shared.write_bytes(content)
+
+                result = self.run_entrypoint(
+                    "verify",
+                    "--strict",
+                    "--scope",
+                    "managed",
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                output = result.stdout + result.stderr
+                self.assertEqual(
+                    output.count("Canonical shared MCP configuration"),
+                    1,
+                )
+                self.assertNotIn(marker, output)
+                self.assertNotIn(str(shared), output)
+
     def test_managed_scope_ignores_excluded_profile_same_name_executable(self):
         (self.hub / "mcp" / "shared-servers.json").write_text(
             json.dumps(

@@ -12,6 +12,10 @@
   suppressing the Hub-managed server.
 - Add managed verification scope so strict verification isolates broken shared
   MCP configuration from unrelated local drift.
+- Bind cached dependency advisories to the current local Hub specification and
+  refresh ordinary checks when otherwise-valid cache records no longer match.
+- Fail managed and structural verification when the canonical shared MCP file
+  is unreadable, invalid JSON, or has an invalid root or `mcpServers` shape.
 
 ## 1.10.1 — 2026-07-28
 
