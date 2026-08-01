@@ -925,7 +925,15 @@ class McpDependencyCliTests(unittest.TestCase):
 
     def write_cache(self, payload):
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.cache_path.parent, 0o700)
         self.cache_path.write_text(json.dumps(payload), encoding="utf-8")
+        os.chmod(self.cache_path, 0o600)
+
+    def write_raw_cache(self, payload):
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.cache_path.parent, 0o700)
+        self.cache_path.write_bytes(payload)
+        os.chmod(self.cache_path, 0o600)
 
     def invoke_main(self, *args, fetch_json=None):
         stdout = io.StringIO()
@@ -943,7 +951,7 @@ class McpDependencyCliTests(unittest.TestCase):
             )
         return rc, stdout.getvalue(), stderr.getvalue()
 
-    def run_entrypoint(self, *args, cache_payload=None):
+    def run_entrypoint(self, *args, cache_payload=None, timeout=None):
         if cache_payload is not None:
             self.write_cache(cache_payload)
         environment = os.environ | {
@@ -957,6 +965,7 @@ class McpDependencyCliTests(unittest.TestCase):
             env=environment,
             text=True,
             capture_output=True,
+            timeout=timeout,
         )
 
     def initialize_clean_hub(self):
@@ -982,6 +991,20 @@ class McpDependencyCliTests(unittest.TestCase):
             check=True,
         )
 
+    def assert_cache_miss_refreshes(self, payload, *, raw=False):
+        if raw:
+            self.write_raw_cache(payload)
+        else:
+            self.write_cache(payload)
+        calls_before = len(self.fetch_calls)
+
+        rc, stdout, stderr = self.invoke_main("check", "--json")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(len(self.fetch_calls), calls_before + 1)
+        self.assertIn("dependencies", json.loads(stdout))
+        self.assertNotIn("PRIVATE-CACHE-VALUE", stdout + stderr)
+
     def test_check_json_fetches_and_caches_only_safe_dependency_records(self):
         rc, stdout, stderr = self.invoke_main("check", "--json")
 
@@ -991,6 +1014,8 @@ class McpDependencyCliTests(unittest.TestCase):
         cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
         self.assertEqual(set(cache), {"checked_at", "dependencies"})
         self.assertEqual(cache["dependencies"], json.loads(stdout)["dependencies"])
+        self.assertEqual(stat.S_IMODE(self.cache_path.parent.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.cache_path.stat().st_mode), 0o600)
         serialized = stdout + stderr + json.dumps(cache)
         self.assertNotIn("PRIVATE-HUB-VALUE", serialized)
         self.assertNotIn("PRIVATE-REGISTRY-VALUE", serialized)
@@ -1031,6 +1056,139 @@ class McpDependencyCliTests(unittest.TestCase):
                 self.assertIn("dependencies", json.loads(stdout))
                 self.assertNotIn("PRIVATE-CACHE-VALUE", stdout + stderr)
 
+    def test_cache_ttl_accepts_exact_boundary_and_rejects_stale_or_future(self):
+        now = 1000000.0
+        boundary = self.safe_cached_update(now - 86400)
+        self.write_cache(boundary)
+        with mock.patch.object(MCP_DEPS.time, "time", return_value=now):
+            rc, stdout, stderr = self.invoke_main("check", "--cached", "--quiet")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("MCP dependency update available", stderr)
+
+        for checked_at in (now - 86400.001, now + 0.001):
+            with self.subTest(checked_at=checked_at):
+                self.write_cache(self.safe_cached_update(checked_at))
+                with mock.patch.object(MCP_DEPS.time, "time", return_value=now):
+                    rc, stdout, stderr = self.invoke_main(
+                        "check", "--cached", "--quiet"
+                    )
+                self.assertEqual(rc, 0)
+                self.assertEqual(stdout + stderr, "")
+
+    def test_cache_rejects_duplicate_json_keys_and_oversized_or_nonfinite_numbers(self):
+        checked_at = time.time()
+        record = json.dumps(self.safe_cached_update()["dependencies"][0])
+        duplicate = (
+            '{"checked_at":'
+            f"{checked_at},"
+            '"checked_at":'
+            f"{checked_at},"
+            f'"dependencies":[{record}]}}'
+        ).encode("utf-8")
+        huge_integer = (
+            b'{"checked_at":'
+            + (b"9" * 5000)
+            + b',"dependencies":[]}'
+        )
+        for label, payload in (
+            ("duplicate key", duplicate),
+            ("huge integer", huge_integer),
+            ("NaN", b'{"checked_at":NaN,"dependencies":[]}'),
+            ("Infinity", b'{"checked_at":Infinity,"dependencies":[]}'),
+        ):
+            with self.subTest(label=label):
+                self.assert_cache_miss_refreshes(payload, raw=True)
+
+    def test_cache_rejects_oversized_bytes_and_version_components_silently(self):
+        oversized_document = json.dumps(self.safe_cached_update()).encode("utf-8")
+        oversized_document += b" " * (MCP_DEPS._MAX_CACHE_BYTES + 1)
+        self.assert_cache_miss_refreshes(oversized_document, raw=True)
+
+        oversized_version = self.safe_cached_update()
+        oversized_version["dependencies"][0]["latest"] = "1." + ("9" * 5000)
+        self.write_cache(oversized_version)
+
+        rc, stdout, stderr = self.invoke_main("check", "--cached", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout + stderr, "")
+
+    def test_cache_rejects_impossible_dependency_records_and_nested_sensitive_keys(self):
+        fixtures = []
+        exact_without_current = self.safe_cached_update()
+        exact_without_current["dependencies"][0].update(
+            {"current": None, "latest": None, "status": "unknown"}
+        )
+        fixtures.append(exact_without_current)
+        for pin_state in ("latest", "unversioned"):
+            invalid = self.safe_cached_update()
+            invalid["dependencies"][0].update(
+                {"pin_state": pin_state, "status": "unpinned"}
+            )
+            fixtures.append(invalid)
+        deprecated_without_latest = self.safe_cached_update()
+        deprecated_without_latest["dependencies"][0].update(
+            {"latest": None, "deprecated": True, "status": "unknown"}
+        )
+        fixtures.append(deprecated_without_latest)
+        deprecated_pypi = self.safe_cached_update()
+        deprecated_pypi["dependencies"][0].update(
+            {"deprecated": True, "status": "deprecated"}
+        )
+        fixtures.append(deprecated_pypi)
+        nested_sensitive = self.safe_cached_update()
+        nested_sensitive["dependencies"][0]["current"] = {
+            "items": [{"OAuthHeader": "PRIVATE-CACHE-VALUE"}]
+        }
+        fixtures.append(nested_sensitive)
+
+        for payload in fixtures:
+            with self.subTest(record=payload["dependencies"][0]):
+                self.assert_cache_miss_refreshes(payload)
+
+    def test_cache_rejects_duplicate_servers_and_package_version_pairs(self):
+        duplicate_server = self.safe_cached_update()
+        duplicate_server["dependencies"].append(
+            dict(duplicate_server["dependencies"][0])
+        )
+        duplicate_pair = self.safe_cached_update()
+        second = dict(duplicate_pair["dependencies"][0])
+        second["server"] = "mineru-copy"
+        duplicate_pair["dependencies"].append(second)
+
+        for payload in (duplicate_server, duplicate_pair):
+            with self.subTest(servers=[item["server"] for item in payload["dependencies"]]):
+                self.assert_cache_miss_refreshes(payload)
+
+    def test_empty_dependency_cache_is_valid_and_does_not_fetch(self):
+        self.write_cache({"checked_at": time.time(), "dependencies": []})
+
+        rc, stdout, stderr = self.invoke_main(
+            "check",
+            "--json",
+            fetch_json=lambda _url: self.fail("valid empty cache must not fetch"),
+        )
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(json.loads(stdout), {"dependencies": []})
+
+    def test_quiet_advisory_deduplicates_each_package_version_pair(self):
+        first = self.safe_cached_update()["dependencies"][0]
+        second = dict(first)
+        second["server"] = "mineru-copy"
+        stderr = io.StringIO()
+
+        with redirect_stderr(stderr):
+            MCP_DEPS._print_dependency_check(
+                [first, second], as_json=False, quiet=True
+            )
+
+        self.assertEqual(
+            stderr.getvalue(),
+            "MCP dependency update available: mineru/mineru-open-mcp 1.0.21 -> 1.0.22\n",
+        )
+
     def test_cached_quiet_advises_from_safe_cache_without_fetching(self):
         self.write_cache(self.safe_cached_update())
 
@@ -1063,6 +1221,286 @@ class McpDependencyCliTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(stdout + stderr, "")
+
+    def test_cached_quiet_rejects_cache_file_symlinks(self):
+        target = self.home / "outside-cache.json"
+        target.write_text(json.dumps(self.safe_cached_update()), encoding="utf-8")
+        os.chmod(target, 0o600)
+        self.cache_path.parent.mkdir(parents=True)
+        os.chmod(self.cache_path.parent, 0o700)
+        self.cache_path.symlink_to(target)
+
+        rc, stdout, stderr = self.invoke_main("check", "--cached", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout + stderr, "")
+
+    def test_cached_quiet_rejects_symlinked_cache_directory(self):
+        cache_root = self.cache_path.parent.parent
+        cache_root.mkdir(parents=True)
+        target = self.home / "outside-cache-directory"
+        target.mkdir(mode=0o700)
+        target_cache = target / "mcp-deps.json"
+        target_cache.write_text(
+            json.dumps(self.safe_cached_update()), encoding="utf-8"
+        )
+        os.chmod(target_cache, 0o600)
+        self.cache_path.parent.symlink_to(target, target_is_directory=True)
+
+        rc, stdout, stderr = self.invoke_main("check", "--cached", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout + stderr, "")
+
+    def test_cached_quiet_rejects_unsafe_directory_and_file_modes(self):
+        fixtures = ((0o777, 0o600), (0o700, 0o644))
+        for directory_mode, file_mode in fixtures:
+            with self.subTest(directory_mode=directory_mode, file_mode=file_mode):
+                self.write_cache(self.safe_cached_update())
+                os.chmod(self.cache_path.parent, directory_mode)
+                os.chmod(self.cache_path, file_mode)
+
+                rc, stdout, stderr = self.invoke_main(
+                    "check", "--cached", "--quiet"
+                )
+
+                self.assertEqual(rc, 0)
+                self.assertEqual(stdout + stderr, "")
+
+    def test_check_accepts_owned_existing_cache_directory_not_writable_by_others(self):
+        self.cache_path.parent.mkdir(parents=True, mode=0o755)
+        os.chmod(self.cache_path.parent, 0o755)
+
+        rc, stdout, stderr = self.invoke_main("check", "--json", "--refresh")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("dependencies", json.loads(stdout))
+        self.assertEqual(stat.S_IMODE(self.cache_path.stat().st_mode), 0o600)
+
+    def test_cached_quiet_rejects_hardlinked_cache_file(self):
+        self.write_cache(self.safe_cached_update())
+        os.link(self.cache_path, self.cache_path.with_name("cache-hardlink"))
+
+        rc, stdout, stderr = self.invoke_main("check", "--cached", "--quiet")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout + stderr, "")
+
+    def test_cached_quiet_rejects_cache_not_owned_by_effective_user(self):
+        self.write_cache(self.safe_cached_update())
+
+        with mock.patch.object(MCP_DEPS.os, "getuid", return_value=os.getuid() + 1):
+            rc, stdout, stderr = self.invoke_main(
+                "check", "--cached", "--quiet"
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout + stderr, "")
+
+    def test_cached_quiet_does_not_block_on_fifo(self):
+        self.cache_path.parent.mkdir(parents=True)
+        os.chmod(self.cache_path.parent, 0o700)
+        os.mkfifo(self.cache_path, 0o600)
+
+        result = self.run_entrypoint(
+            "deps", "check", "--cached", "--quiet", timeout=1
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout + result.stderr, "")
+
+    def test_cached_quiet_does_not_block_on_fifo_cache_directory(self):
+        cache_root = self.cache_path.parent.parent
+        cache_root.mkdir(parents=True)
+        os.mkfifo(self.cache_path.parent, 0o700)
+
+        result = self.run_entrypoint(
+            "deps", "check", "--cached", "--quiet", timeout=1
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout + result.stderr, "")
+
+    def test_cached_quiet_rejects_device_descriptor_and_closes_it(self):
+        self.write_cache(self.safe_cached_update())
+        real_open = os.open
+        cache_file_descriptors = []
+
+        def open_device(path, flags, mode=0o777, *, dir_fd=None):
+            if path == "mcp-deps.json" and dir_fd is not None:
+                descriptor = real_open("/dev/null", os.O_RDONLY | os.O_NONBLOCK)
+                cache_file_descriptors.append(descriptor)
+                return descriptor
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(MCP_DEPS.os, "open", side_effect=open_device):
+            rc, stdout, stderr = self.invoke_main(
+                "check", "--cached", "--quiet"
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout + stderr, "")
+        self.assertTrue(cache_file_descriptors)
+        for descriptor in cache_file_descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cache_read_closes_valid_directory_and_file_descriptors(self):
+        self.write_cache(self.safe_cached_update())
+        real_open = os.open
+        opened = []
+
+        def recording_open(path, flags, mode=0o777, *, dir_fd=None):
+            descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+            opened.append(descriptor)
+            return descriptor
+
+        with mock.patch.object(MCP_DEPS.os, "open", side_effect=recording_open):
+            rc, stdout, stderr = self.invoke_main(
+                "check", "--cached", "--quiet"
+            )
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("MCP dependency update available", stderr)
+        self.assertEqual(len(opened), 2)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_cache_read_uses_validated_directory_descriptor_after_path_swap(self):
+        self.write_cache(self.safe_cached_update())
+        original_directory = self.cache_path.parent
+        held_directory = original_directory.with_name("agent-sync-held")
+        real_open_cache_dir = MCP_DEPS._open_cache_dir
+        swapped = False
+
+        def open_then_swap(*, create):
+            nonlocal swapped
+            descriptor = real_open_cache_dir(create=create)
+            if descriptor is not None and not swapped:
+                original_directory.rename(held_directory)
+                original_directory.mkdir(mode=0o700)
+                replacement = self.safe_cached_update()
+                replacement["dependencies"][0]["latest"] = "9.9.9"
+                replacement["dependencies"][0]["status"] = "update-available"
+                replacement_path = original_directory / "mcp-deps.json"
+                replacement_path.write_text(json.dumps(replacement), encoding="utf-8")
+                os.chmod(replacement_path, 0o600)
+                swapped = True
+            return descriptor
+
+        with mock.patch.object(
+            MCP_DEPS, "_open_cache_dir", side_effect=open_then_swap
+        ):
+            rc, stdout, stderr = self.invoke_main(
+                "check", "--cached", "--quiet"
+            )
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("1.0.21 -> 1.0.22", stderr)
+        self.assertNotIn("9.9.9", stdout + stderr)
+
+    def test_cache_write_uses_validated_directory_descriptor_after_path_swap(self):
+        self.cache_path.parent.mkdir(parents=True)
+        os.chmod(self.cache_path.parent, 0o700)
+        original_directory = self.cache_path.parent
+        held_directory = original_directory.with_name("agent-sync-held")
+        real_open_cache_dir = MCP_DEPS._open_cache_dir
+        swapped = False
+
+        def open_then_swap(*, create):
+            nonlocal swapped
+            descriptor = real_open_cache_dir(create=create)
+            if descriptor is not None and create and not swapped:
+                original_directory.rename(held_directory)
+                original_directory.mkdir(mode=0o700)
+                swapped = True
+            return descriptor
+
+        with mock.patch.object(
+            MCP_DEPS, "_open_cache_dir", side_effect=open_then_swap
+        ):
+            rc, stdout, stderr = self.invoke_main("check", "--json", "--refresh")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertFalse((original_directory / "mcp-deps.json").exists())
+        written = json.loads(
+            (held_directory / "mcp-deps.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(written["dependencies"][0]["latest"], "1.0.22")
+
+    def test_concurrent_cache_writers_leave_one_complete_safe_record(self):
+        first = self.safe_cached_update()
+        second = self.safe_cached_update()
+        second["dependencies"][0].update(
+            {"current": "1.0.22", "latest": "1.0.22", "status": "current"}
+        )
+        errors = []
+
+        def write(payload):
+            try:
+                MCP_DEPS._write_cache(payload["dependencies"], payload["checked_at"])
+            except Exception as error:
+                errors.append(error)
+
+        environment = {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
+        with mock.patch.dict(os.environ, environment, clear=False):
+            threads = [
+                threading.Thread(target=write, args=(payload,))
+                for payload in (first, second) * 10
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            cached = MCP_DEPS._read_cache()
+
+        self.assertEqual(errors, [])
+        self.assertIn(cached, (first, second))
+        self.assertEqual(list(self.cache_path.parent.glob(".mcp-deps.json.*")), [])
+
+    def test_concurrent_cache_readers_never_observe_partial_atomic_writes(self):
+        first = self.safe_cached_update()
+        second = self.safe_cached_update()
+        second["dependencies"][0].update(
+            {"current": "1.0.22", "latest": "1.0.22", "status": "current"}
+        )
+        observations = []
+        errors = []
+
+        def write_many():
+            try:
+                for payload in (first, second) * 20:
+                    MCP_DEPS._write_cache(
+                        payload["dependencies"], payload["checked_at"]
+                    )
+            except Exception as error:
+                errors.append(error)
+
+        def read_many():
+            try:
+                for _attempt in range(80):
+                    observations.append(MCP_DEPS._read_cache())
+            except Exception as error:
+                errors.append(error)
+
+        environment = {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
+        with mock.patch.dict(os.environ, environment, clear=False):
+            MCP_DEPS._write_cache(first["dependencies"], first["checked_at"])
+            threads = [threading.Thread(target=write_many)] + [
+                threading.Thread(target=read_many) for _attempt in range(3)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertTrue(observations)
+        self.assertTrue(
+            all(item is None or item in (first, second) for item in observations)
+        )
+        self.assertTrue(any(item in (first, second) for item in observations))
 
     def test_cache_update_is_atomic_and_sanitizes_replace_failures(self):
         secret = "PRIVATE-REPLACE-FAILURE"
@@ -1111,6 +1549,50 @@ class McpDependencyCliTests(unittest.TestCase):
         self.assertIn("clean git worktree", stderr)
         self.assertEqual(self.shared_path.read_bytes(), before)
 
+    def test_pin_apply_rechecks_clean_hub_after_registry_fetch(self):
+        self.initialize_clean_hub()
+        before = self.shared_path.read_bytes()
+
+        def dirty_during_fetch(url):
+            (self.hub / "concurrent-unrelated-file").write_text(
+                "dirty\n", encoding="utf-8"
+            )
+            return self.fetch_json(url)
+
+        rc, stdout, stderr = self.invoke_main(
+            "pin",
+            "mineru",
+            "1.0.22",
+            "--apply",
+            fetch_json=dirty_during_fetch,
+        )
+
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("clean git worktree", stderr)
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_pin_apply_retains_target_identity_check_during_registry_fetch(self):
+        before = self.shared_path.read_bytes()
+        concurrent = before.replace(b"PRIVATE-HUB-VALUE", b"CONCURRENT-VALUE")
+
+        def replace_target(url):
+            self.shared_path.write_bytes(concurrent)
+            return self.fetch_json(url)
+
+        with self.assertRaisesRegex(
+            DependencyError, "MCP dependency config changed during pinning"
+        ):
+            MCP_DEPS.pin_dependency(
+                self.hub,
+                "mineru",
+                "1.0.22",
+                apply=True,
+                fetch_json=replace_target,
+            )
+
+        self.assertEqual(self.shared_path.read_bytes(), concurrent)
+
     def test_pin_apply_changes_a_clean_hub_and_keeps_output_secret_free(self):
         self.initialize_clean_hub()
 
@@ -1134,6 +1616,43 @@ class McpDependencyCliTests(unittest.TestCase):
         self.assertIn("dependencies", json.loads(checked.stdout))
         self.assertNotEqual(bad_pin.returncode, 0)
 
+    def test_deps_help_and_sanitized_usage_errors_use_conventional_exit_codes(self):
+        marker = "PRIVATE-CLI-SECRET"
+        help_result = self.run_entrypoint("deps", "--help")
+        usage_errors = (
+            self.run_entrypoint("deps"),
+            self.run_entrypoint("deps", "pin"),
+            self.run_entrypoint(
+                "deps",
+                "pin",
+                "mineru",
+                "1.0.22",
+                "--dry-run",
+                "--apply",
+            ),
+            self.run_entrypoint(
+                "deps", "smoke", "mineru", "--timeout", marker
+            ),
+            self.run_entrypoint("deps", "check", f"--{marker}"),
+            self.run_entrypoint("deps", marker),
+        )
+        operational_error = self.run_entrypoint(
+            "deps", "pin", "mineru", marker, "--dry-run"
+        )
+
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("usage:", help_result.stdout)
+        self.assertEqual(help_result.stderr, "")
+        for result in usage_errors:
+            with self.subTest(args=result.args):
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("invalid arguments", result.stderr)
+                self.assertNotIn(marker, result.stdout + result.stderr)
+        self.assertEqual(operational_error.returncode, 1)
+        self.assertNotIn(
+            marker, operational_error.stdout + operational_error.stderr
+        )
+
     def test_only_all_prints_cached_dependency_advisory_without_mutating_hub(self):
         self.shared_path.write_text('{"mcpServers": {}}', encoding="utf-8")
         before = self.shared_path.read_bytes()
@@ -1151,6 +1670,21 @@ class McpDependencyCliTests(unittest.TestCase):
         )
         self.assertEqual(all_run.returncode, 0, all_run.stdout + all_run.stderr)
         self.assertIn("MCP dependency update available", all_run.stderr)
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_all_does_not_block_on_fifo_dependency_cache(self):
+        self.shared_path.write_text('{"mcpServers": {}}', encoding="utf-8")
+        self.cache_path.parent.mkdir(parents=True)
+        os.chmod(self.cache_path.parent, 0o700)
+        os.mkfifo(self.cache_path, 0o600)
+        before = self.shared_path.read_bytes()
+
+        result = self.run_entrypoint("all", timeout=10)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(
+            "MCP dependency update available", result.stdout + result.stderr
+        )
         self.assertEqual(self.shared_path.read_bytes(), before)
 
 

@@ -7,6 +7,7 @@ import math
 import os
 import queue
 import re
+import secrets
 import signal
 import stat
 import subprocess
@@ -36,6 +37,10 @@ _SHUTDOWN_GRACE = 0.1
 _SAFE_SERVER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _OS_MANAGED_XATTRS = frozenset({"com.apple.provenance"})
 _CACHE_TTL = 86400
+_CACHE_FILENAME = "mcp-deps.json"
+_MAX_CACHE_BYTES = 256 * 1024
+_MAX_CACHE_NUMBER_LENGTH = 32
+_MAX_CACHE_VERSION_LENGTH = 64
 _CACHE_KEYS = frozenset({"checked_at", "dependencies"})
 _CACHE_RECORD_KEYS = frozenset(
     {
@@ -311,7 +316,54 @@ def _cache_path() -> Path:
     if not cache_root:
         home = os.environ.get("HOME")
         cache_root = str(Path(home) / ".cache") if home else str(Path.home() / ".cache")
-    return Path(cache_root) / "agent-sync" / "mcp-deps.json"
+    return Path(cache_root) / "agent-sync" / _CACHE_FILENAME
+
+
+def _cache_failure(create: bool) -> int | None:
+    if create:
+        raise DependencyError("MCP dependency cache update failed")
+    return None
+
+
+def _open_cache_dir(*, create: bool) -> int | None:
+    cache_dir = _cache_path().parent
+    required_flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC")
+    if not hasattr(os, "getuid") or any(
+        not hasattr(os, name) for name in required_flags
+    ):
+        return _cache_failure(create)
+    if create:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            return _cache_failure(create)
+
+    descriptor = None
+    try:
+        descriptor = os.open(
+            cache_dir,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        metadata = os.fstat(descriptor)
+        directory_mode = stat.S_IMODE(metadata.st_mode)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or directory_mode & 0o700 != 0o700
+            or directory_mode & 0o022
+            or directory_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX)
+        ):
+            os.close(descriptor)
+            descriptor = None
+            return _cache_failure(create)
+        return descriptor
+    except OSError:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        return _cache_failure(create)
 
 
 def _has_sensitive_cache_key(value: object) -> bool:
@@ -324,6 +376,49 @@ def _has_sensitive_cache_key(value: object) -> bool:
     elif isinstance(value, list):
         return any(_has_sensitive_cache_key(item) for item in value)
     return False
+
+
+def _decode_cache_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate cache key")
+        result[key] = value
+    return result
+
+
+def _decode_cache_int(value: str) -> int:
+    if len(value) > _MAX_CACHE_NUMBER_LENGTH:
+        raise ValueError("oversized cache number")
+    return int(value)
+
+
+def _decode_cache_float(value: str) -> float:
+    if len(value) > _MAX_CACHE_NUMBER_LENGTH:
+        raise ValueError("oversized cache number")
+    return float(value)
+
+
+def _decode_cache_constant(_value: str) -> None:
+    raise ValueError("non-finite cache number")
+
+
+def _decode_cache(content: bytes) -> object:
+    return json.loads(
+        content.decode("utf-8"),
+        object_pairs_hook=_decode_cache_object,
+        parse_int=_decode_cache_int,
+        parse_float=_decode_cache_float,
+        parse_constant=_decode_cache_constant,
+    )
+
+
+def _valid_cached_version(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) <= _MAX_CACHE_VERSION_LENGTH
+        and bool(_NUMERIC_VERSION.fullmatch(value))
+    )
 
 
 def _valid_cached_record(record: object) -> bool:
@@ -345,17 +440,17 @@ def _valid_cached_record(record: object) -> bool:
     package_pattern = _NPM_PACKAGE if ecosystem == "npm" else _PYPI_PACKAGE
     if not package_pattern.fullmatch(package):
         return False
-    if current is not None and (
-        not isinstance(current, str) or not _NUMERIC_VERSION.fullmatch(current)
-    ):
+    if current is not None and not _valid_cached_version(current):
         return False
-    if latest is not None and (
-        not isinstance(latest, str) or not _NUMERIC_VERSION.fullmatch(latest)
-    ):
+    if latest is not None and not _valid_cached_version(latest):
         return False
     if pin_state not in {"exact", "latest", "unversioned"}:
         return False
     if not isinstance(deprecated, bool):
+        return False
+    if (pin_state == "exact") != (current is not None):
+        return False
+    if deprecated and (ecosystem != "npm" or latest is None):
         return False
     spec = DependencySpec(server, ecosystem, package, current, pin_state, 0)
     if metadata_url != _registry_url(spec):
@@ -394,54 +489,179 @@ def _validate_cache(payload: object, now: float) -> dict[str, object] | None:
         or checked_at > now
         or now - checked_at > _CACHE_TTL
         or not isinstance(dependencies, list)
-        or not all(_valid_cached_record(record) for record in dependencies)
     ):
         return None
+    servers = set()
+    package_versions = set()
+    for record in dependencies:
+        if not _valid_cached_record(record):
+            return None
+        server = record["server"]
+        package_version = (
+            record["ecosystem"],
+            record["package"],
+            record["latest"],
+        )
+        if server in servers or package_version in package_versions:
+            return None
+        servers.add(server)
+        package_versions.add(package_version)
     return payload
 
 
 def _read_cache(now: float | None = None) -> dict[str, object] | None:
-    try:
-        payload = json.loads(_cache_path().read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    directory_descriptor = _open_cache_dir(create=False)
+    if directory_descriptor is None:
         return None
-    return _validate_cache(payload, time.time() if now is None else now)
+    file_descriptor = None
+    try:
+        required_flags = ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC")
+        if any(not hasattr(os, name) for name in required_flags):
+            return None
+        file_descriptor = os.open(
+            _CACHE_FILENAME,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=directory_descriptor,
+        )
+        before = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size <= 0
+            or before.st_size > _MAX_CACHE_BYTES
+        ):
+            return None
+        content = bytearray()
+        while len(content) <= _MAX_CACHE_BYTES:
+            chunk = os.read(
+                file_descriptor,
+                min(65536, _MAX_CACHE_BYTES + 1 - len(content)),
+            )
+            if not chunk:
+                break
+            content.extend(chunk)
+        after = os.fstat(file_descriptor)
+        if (
+            len(content) > _MAX_CACHE_BYTES
+            or len(content) != before.st_size
+            or (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+                before.st_mode,
+                before.st_uid,
+                before.st_nlink,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+                after.st_mode,
+                after.st_uid,
+                after.st_nlink,
+            )
+        ):
+            return None
+        payload = _decode_cache(bytes(content))
+        return _validate_cache(payload, time.time() if now is None else now)
+    except Exception:
+        return None
+    finally:
+        if file_descriptor is not None:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+        try:
+            os.close(directory_descriptor)
+        except OSError:
+            pass
 
 
 def _write_cache(dependencies: list[dict[str, object]], checked_at: float) -> None:
-    cache_path = _cache_path()
     payload = {"checked_at": checked_at, "dependencies": dependencies}
     if _validate_cache(payload, checked_at) is None:
         raise DependencyError("MCP dependency cache update failed")
-    descriptor = None
+    content = (
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    if len(content) > _MAX_CACHE_BYTES:
+        raise DependencyError("MCP dependency cache update failed")
+    directory_descriptor = _open_cache_dir(create=True)
+    if directory_descriptor is None:
+        raise DependencyError("MCP dependency cache update failed")
+    file_descriptor = None
     temporary_name = None
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{cache_path.name}.", dir=cache_path.parent
+        required_flags = ("O_NOFOLLOW", "O_CLOEXEC")
+        if any(not hasattr(os, name) for name in required_flags):
+            raise OSError
+        for _attempt in range(10):
+            candidate = f".{_CACHE_FILENAME}.{os.getpid()}.{secrets.token_hex(8)}"
+            try:
+                file_descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
+                    | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=directory_descriptor,
+                )
+                temporary_name = candidate
+                break
+            except FileExistsError:
+                continue
+        if file_descriptor is None or temporary_name is None:
+            raise OSError
+        metadata = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise OSError
+        view = memoryview(content)
+        while view:
+            written = os.write(file_descriptor, view)
+            if written <= 0:
+                raise OSError
+            view = view[written:]
+        os.fsync(file_descriptor)
+        os.close(file_descriptor)
+        file_descriptor = None
+        os.replace(
+            temporary_name,
+            _CACHE_FILENAME,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
         )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary:
-            descriptor = None
-            os.fchmod(temporary.fileno(), 0o600)
-            json.dump(payload, temporary, sort_keys=True, separators=(",", ":"))
-            temporary.write("\n")
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_name, cache_path)
         temporary_name = None
-    except Exception:
+    except (DependencyError, OSError):
         raise DependencyError("MCP dependency cache update failed") from None
     finally:
-        if descriptor is not None:
+        if file_descriptor is not None:
             try:
-                os.close(descriptor)
+                os.close(file_descriptor)
             except OSError:
                 pass
         if temporary_name is not None:
             try:
-                os.unlink(temporary_name)
+                os.unlink(temporary_name, dir_fd=directory_descriptor)
             except OSError:
                 pass
+        try:
+            os.close(directory_descriptor)
+        except OSError:
+            pass
 
 
 def _target_is_available(
@@ -617,6 +837,7 @@ def pin_dependency(
     *,
     apply: bool,
     fetch_json: Callable[[str], object],
+    require_clean_hub: bool = False,
 ) -> str:
     if not isinstance(version, str) or not _NUMERIC_VERSION.fullmatch(version):
         raise DependencyError("invalid MCP dependency target version")
@@ -658,6 +879,8 @@ def pin_dependency(
     proposed = original.replace(old_token, json.dumps(new_argument).encode("utf-8"), 1)
 
     if apply:
+        if require_clean_hub:
+            _require_clean_hub(hub)
         if not _same_source(source, _regular_file_metadata(config_path)):
             raise DependencyError("MCP dependency config changed during pinning")
         _atomic_write(config_path, proposed, source)
@@ -1210,8 +1433,14 @@ def _print_dependency_check(
     dependencies: list[dict[str, object]], *, as_json: bool, quiet: bool
 ) -> None:
     if quiet:
+        advised = set()
         for record in dependencies:
-            if record["status"] == "update-available":
+            package_version = (record["package"], record["latest"])
+            if (
+                record["status"] == "update-available"
+                and package_version not in advised
+            ):
+                advised.add(package_version)
                 print(
                     "MCP dependency update available: "
                     f"{record['server']}/{record['package']} "
@@ -1231,8 +1460,14 @@ def _print_dependency_check(
         )
 
 
+class _SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: invalid arguments\n")
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mcp-deps")
+    parser = _SafeArgumentParser(prog="mcp-deps")
     commands = parser.add_subparsers(dest="command", required=True)
 
     check = commands.add_parser("check", help="check primary registries for updates")
@@ -1301,6 +1536,7 @@ def main(
                 args.version,
                 apply=args.apply,
                 fetch_json=fetch_json,
+                require_clean_hub=args.apply,
             )
             print(f"{args.server}: {old_requirement} -> {new_requirement}")
             return 0

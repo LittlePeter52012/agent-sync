@@ -414,11 +414,19 @@ agent-sync sync
 ```
 
 `deps check` caches only a fixed, secret-free dependency summary for 24 hours.
-`agent-sync all` reads that cache before syncing and only reports available
-candidates; it does not fetch while offline, pin a version, or make a
-compatibility decision. An active Agent reviews the primary release and chooses
-whether to apply a pin. No hidden secondary model call participates in this
-workflow.
+The dependency advisory inside `agent-sync all` reads only that cache before
+the explicit full-sync phase and only reports available candidates; the
+advisory does not fetch a registry, pin a version, or make a compatibility
+decision. This cached/offline statement applies to the dependency advisory,
+not to the separately configured auto-update behavior described below. An
+active Agent reviews the primary release and chooses whether to apply a pin.
+No hidden secondary model call participates in this workflow.
+
+`deps pin --apply` checks that the Hub is clean before registry validation and
+again immediately before replacing the target config, while also retaining the
+target-file identity check. An unrelated external writer can still dirty the
+Hub in the very small interval after the final Git check; excluding that race
+would require a repository-wide lock shared by every writer.
 
 ### Auto-update (optional)
 
