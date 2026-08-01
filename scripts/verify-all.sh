@@ -1,5 +1,6 @@
 #!/bin/bash
 # verify-all.sh — structural verification for hub + tool coverage
+# Runtime health is intentionally owned by explicit Doctor callers.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

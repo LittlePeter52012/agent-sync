@@ -1626,13 +1626,22 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--runtime", action="store_true")
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--scope", choices=("all", "managed"), default="all")
     args = parser.parse_args()
     report = build_report(runtime=args.runtime)
     if args.as_json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print(render(report))
-    return 1 if args.strict and report["findings"] else 0
+    blocking = report["findings"]
+    if args.scope == "managed":
+        blocking = [
+            item
+            for item in blocking
+            if item["scope"] in {"managed", "policy"}
+            or item["owner"] == "hub"
+        ]
+    return 1 if args.strict and blocking else 0
 
 
 if __name__ == "__main__":

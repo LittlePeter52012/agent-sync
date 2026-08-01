@@ -194,7 +194,7 @@ agent-sync sources       # rank local MCP configurations without changing them
 agent-sync sync --from vscode --dry-run
 agent-sync sync --from vscode # VS Code → Hub → all tools
 agent-sync trace mcp NAME # show shared/retired/tool-only ownership and locations
-agent-sync all           # backward-compatible alias for full Hub sync
+agent-sync all           # full Hub sync + structural and managed runtime gates
 agent-sync skills        # symlink whitelist skills
 agent-sync mcp           # merge shared MCP (keeps tool-only servers)
 agent-sync rules         # inject rules/*.md
@@ -206,11 +206,15 @@ agent-sync multica       # read-only check of allowlisted Multica state
 agent-sync multica --apply # explicitly apply allowlisted Multica changes
 agent-sync list          # coverage matrix
 agent-sync verify        # structural verification
-agent-sync verify --strict # structural verification + runtime doctor
+agent-sync verify --strict # structural verification + full strict runtime doctor
+agent-sync verify --strict --scope managed
+                         # structural verification + Hub-managed strict gate
 agent-sync test          # Python tests + syntax checks + Bash evaluation suite
 agent-sync status
 agent-sync doctor        # local agent capabilities and sync-health report
 agent-sync doctor --runtime # add bounded Cursor/OpenCode/Claude MCP probes
+agent-sync doctor --runtime --strict --scope managed
+                         # full report; block only Hub/policy-owned findings
 agent-sync doctor --json # same report as safe, machine-readable JSON
 agent-sync fix --dry-run # preview safe local repairs without writing
 agent-sync fix           # sync missing coverage and normalize synced rules
@@ -241,6 +245,15 @@ them with
 `AGENT_SYNC_RUNTIME_TIMEOUT_OPENCODE` and
 `AGENT_SYNC_RUNTIME_TIMEOUT_CLAUDE`, or set
 `AGENT_SYNC_RUNTIME_TIMEOUT` for both.
+
+Strict verification has two exit gates. The default `verify --strict` and
+`doctor --strict` use the full gate: every configured local, plugin-owned, and
+tool-only runtime finding can fail the command. `--scope managed` keeps the
+same complete Doctor report but limits its nonzero exit gate to Hub distribution
+and policy findings. `agent-sync all` first completes structural verification,
+then prints one runtime Doctor report using that managed gate. Ordinary
+`agent-sync sync` remains structural-only and does not run runtime probes.
+Neither strict scope mutates accounts, credentials, or product plugins.
 
 `fix` is intentionally narrow: it repairs missing sync coverage, removes retired
 Hub-managed MCP names, and normalizes managed rule blocks. Tool-only MCP servers
