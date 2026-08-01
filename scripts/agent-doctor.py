@@ -27,6 +27,46 @@ PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 HOOK_PARSE_ERROR = "<hook-parse-error>"
 
 
+def make_finding(
+    message: str,
+    *,
+    scope: str,
+    owner: str,
+    severity: str = "attention",
+) -> dict[str, str]:
+    return {
+        "severity": severity,
+        "message": message,
+        "scope": scope,
+        "owner": owner,
+    }
+
+
+def policy_file_findings() -> list[dict[str, str]]:
+    path = HUB / "policies" / "tool-scopes.json"
+    if not path.exists():
+        return []
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        return [
+            make_finding(
+                "Tool scope policy could not be read.",
+                scope="policy",
+                owner="hub",
+            )
+        ]
+    except json.JSONDecodeError:
+        return [
+            make_finding(
+                "Tool scope policy is invalid JSON.",
+                scope="policy",
+                owner="hub",
+            )
+        ]
+    return []
+
+
 def read_manifest_skills() -> list[str]:
     path = HUB / "manifest.yaml"
     if not path.exists():
@@ -137,10 +177,11 @@ def mcp_usability_findings() -> list[dict[str, str]]:
         for variable in sorted(placeholder_names(config)):
             if variable not in resolved:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": f"Unresolved Hub placeholder for {server_name}: {variable}",
-                    }
+                    make_finding(
+                        f"Unresolved Hub placeholder for {server_name}: {variable}",
+                        scope="managed",
+                        owner="hub",
+                    )
                 )
         if config.get("type", "stdio") == "http" or config.get("url"):
             continue
@@ -151,10 +192,11 @@ def mcp_usability_findings() -> list[dict[str, str]]:
         if not present:
             command_name = command.replace("\\", "/").rsplit("/", 1)[-1]
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Missing MCP executable for {server_name}: {command_name}",
-                }
+                make_finding(
+                    f"Missing MCP executable for {server_name}: {command_name}",
+                    scope="managed",
+                    owner="hub",
+                )
             )
     return findings
 
@@ -162,37 +204,47 @@ def mcp_usability_findings() -> list[dict[str, str]]:
 def configured_mcp_findings() -> list[dict[str, str]]:
     """Audit every configured MCP, including tool-only and retired entries."""
     findings: list[dict[str, str]] = []
+    shared = {name.casefold() for name in read_shared_mcp()}
     for record in collect_inventory(HOME, HUB):
         if record["parse_error"]:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"{record['label']} MCP configuration is invalid.",
-                }
+                make_finding(
+                    f"{record['label']} MCP configuration is invalid.",
+                    scope="local",
+                    owner=record["tool"],
+                )
             )
         for name in record["missing_commands"]:
+            scope, owner = (
+                ("managed", "hub")
+                if name.casefold() in shared
+                else ("local", record["tool"])
+            )
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Missing MCP executable for {record['label']}/{name}.",
-                }
+                make_finding(
+                    f"Missing MCP executable for {record['label']}/{name}.",
+                    scope=scope,
+                    owner=owner,
+                )
             )
         for name in record["retired"]:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Retired MCP still configured in {record['label']}: {name}",
-                }
+                make_finding(
+                    f"Retired MCP still configured in {record['label']}: {name}",
+                    scope="managed",
+                    owner="hub",
+                )
             )
         for names in record.get("duplicate_names", []):
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         f"Duplicate MCP aliases in {record['label']}: "
                         f"{', '.join(names)}"
                     ),
-                }
+                    scope="local",
+                    owner=record["tool"],
+                )
             )
     return findings
 
@@ -253,20 +305,21 @@ def _toml_has_concrete_sensitive(path: Path) -> bool:
 
 def sensitive_config_findings() -> list[dict[str, str]]:
     configs = (
-        ("Cursor", HOME / ".cursor" / "mcp.json", "json"),
-        ("Gemini CLI", HOME / ".gemini" / "settings.json", "json"),
-        ("Gemini global", HOME / ".gemini" / "config" / "mcp_config.json", "json"),
-        ("Claude", HOME / ".claude.json", "json"),
-        ("OpenCode", HOME / ".config" / "opencode" / "opencode.json", "json"),
+        ("Cursor", "cursor", HOME / ".cursor" / "mcp.json", "json"),
+        ("Gemini CLI", "gemini", HOME / ".gemini" / "settings.json", "json"),
+        ("Gemini global", "gemini-global", HOME / ".gemini" / "config" / "mcp_config.json", "json"),
+        ("Claude", "claude", HOME / ".claude.json", "json"),
+        ("OpenCode", "opencode", HOME / ".config" / "opencode" / "opencode.json", "json"),
         (
             "Copilot / VS Code",
+            "vscode",
             HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json",
             "json",
         ),
-        ("Codex / ChatGPT", HOME / ".codex" / "config.toml", "toml"),
+        ("Codex / ChatGPT", "codex", HOME / ".codex" / "config.toml", "toml"),
     )
     findings: list[dict[str, str]] = []
-    for label, path, kind in configs:
+    for label, owner, path, kind in configs:
         if not path.exists():
             continue
         sensitive = (
@@ -280,13 +333,14 @@ def sensitive_config_findings() -> list[dict[str, str]]:
             continue
         if sensitive and unsafe_mode:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         "Secret-bearing MCP config is group/world readable: "
                         f"{label}."
                     ),
-                }
+                    scope="local",
+                    owner=owner,
+                )
             )
     return findings
 
@@ -350,19 +404,15 @@ def plugin_scope_findings() -> list[dict[str, str]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return [
-            {
-                "severity": "attention",
-                "message": "Tool scope policy is invalid JSON.",
-            }
-        ]
+        return []
     policies = data.get("plugins", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
         return [
-            {
-                "severity": "attention",
-                "message": "Tool scope policy has an invalid plugins section.",
-            }
+            make_finding(
+                "Tool scope policy has an invalid plugins section.",
+                scope="policy",
+                owner="hub",
+            )
         ]
     inventories = {
         "opencode": opencode_plugins(),
@@ -378,28 +428,31 @@ def plugin_scope_findings() -> list[dict[str, str]]:
     for tool, policy in policies.items():
         if tool not in inventories:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Plugin scope policy has an unsupported tool: {tool}",
-                }
+                make_finding(
+                    f"Plugin scope policy has an unsupported tool: {tool}",
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
         if not isinstance(policy, dict):
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Plugin scope policy has an invalid entry for {tool}.",
-                }
+                make_finding(
+                    f"Plugin scope policy has an invalid entry for {tool}.",
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
         installed = inventories[tool]
         for plugin in policy.get("required", []):
             if isinstance(plugin, str) and normalize_plugin_spec(plugin) not in installed:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": f"Required plugin missing from {labels[tool]}: {plugin}",
-                    }
+                    make_finding(
+                        f"Required plugin missing from {labels[tool]}: {plugin}",
+                        scope="local",
+                        owner=tool,
+                    )
                 )
         for plugin in policy.get("forbidden", []):
             if not isinstance(plugin, str):
@@ -407,10 +460,11 @@ def plugin_scope_findings() -> list[dict[str, str]]:
             normalized = normalize_plugin_spec(plugin)
             if plugin in installed or normalized in installed:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": f"Forbidden plugin configured in {labels[tool]}: {plugin}",
-                    }
+                    make_finding(
+                        f"Forbidden plugin configured in {labels[tool]}: {plugin}",
+                        scope="local",
+                        owner=tool,
+                    )
                 )
     return findings
 
@@ -466,13 +520,14 @@ def codex_orchestration_findings() -> list[dict[str, str]]:
             configured = configured_agents.get(key, "<unset>")
             if configured != expected:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             "Codex agent setting differs from Hub policy: "
                             f"{key} (configured {configured}, expected {expected})."
                         ),
-                    }
+                        scope="local",
+                        owner="codex",
+                    )
                 )
 
     remove_agent_keys = orchestration.get("remove_agent_keys", [])
@@ -480,13 +535,14 @@ def codex_orchestration_findings() -> list[dict[str, str]]:
         for key in remove_agent_keys:
             if isinstance(key, str) and key in configured_agents:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             "Forbidden Codex agent legacy setting is present: "
                             f"{key}."
                         ),
-                    }
+                        scope="local",
+                        owner="codex",
+                    )
                 )
 
     table_names = set(re.findall(r"(?m)^\[([^\]]+)\]\s*$", config_text))
@@ -495,13 +551,14 @@ def codex_orchestration_findings() -> list[dict[str, str]]:
         for name in forbidden_tables:
             if isinstance(name, str) and name in table_names:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             "Forbidden Codex orchestration table is present: "
                             f"{name}."
                         ),
-                    }
+                        scope="local",
+                        owner="codex",
+                    )
                 )
 
     forbidden_marketplaces = orchestration.get("forbidden_marketplaces", [])
@@ -510,13 +567,14 @@ def codex_orchestration_findings() -> list[dict[str, str]]:
             table = f"marketplaces.{name}"
             if isinstance(name, str) and table in table_names:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             "Forbidden Codex marketplace is configured: "
                             f"{name}."
                         ),
-                    }
+                        scope="local",
+                        owner="codex",
+                    )
                 )
 
     prefixes = orchestration.get("forbidden_hook_prefixes", [])
@@ -533,13 +591,14 @@ def codex_orchestration_findings() -> list[dict[str, str]]:
                 for name in hook_names
             ):
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             "Forbidden Codex hook state is still trusted: "
                             f"{prefix}"
                         ),
-                    }
+                        scope="local",
+                        owner="codex",
+                    )
                 )
     return findings
 
@@ -555,10 +614,11 @@ def skill_dependency_findings() -> list[dict[str, str]]:
     policies = data.get("skills", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
         return [
-            {
-                "severity": "attention",
-                "message": "Tool scope policy has an invalid skills section.",
-            }
+            make_finding(
+                "Tool scope policy has an invalid skills section.",
+                scope="policy",
+                owner="hub",
+            )
         ]
 
     manifest_skills = set(read_manifest_skills())
@@ -567,13 +627,14 @@ def skill_dependency_findings() -> list[dict[str, str]]:
         if skill not in manifest_skills:
             display_name = skill.replace(chr(92), "/").rsplit("/", 1)[-1]
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         "Skill dependency policy names unlisted Hub Skill: "
                         f"{display_name}"
                     ),
-                }
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
         commands = (
@@ -585,13 +646,14 @@ def skill_dependency_findings() -> list[dict[str, str]]:
             isinstance(command, str) and command.strip() for command in commands
         ):
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         "Skill dependency policy has invalid required_commands "
                         f"for {skill}"
                     ),
-                }
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
         for command in commands:
@@ -602,13 +664,14 @@ def skill_dependency_findings() -> list[dict[str, str]]:
                 available = bool(shutil.which(command))
             if not available:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             f"Required CLI missing for Skill {skill}: "
                             f"{command.replace(chr(92), '/').rsplit('/', 1)[-1]}"
                         ),
-                    }
+                        scope="managed",
+                        owner="hub",
+                    )
                 )
     return findings
 
@@ -670,10 +733,11 @@ def hook_scope_findings() -> list[dict[str, str]]:
     policies = data.get("hooks", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
         return [
-            {
-                "severity": "attention",
-                "message": "Tool scope policy has an invalid hooks section.",
-            }
+            make_finding(
+                "Tool scope policy has an invalid hooks section.",
+                scope="policy",
+                owner="hub",
+            )
         ]
 
     configs = {
@@ -694,13 +758,14 @@ def hook_scope_findings() -> list[dict[str, str]]:
     for tool, policy in policies.items():
         if tool not in configs:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         "Hook scope policy has an unsupported tool: "
                         f"{tool}"
                     ),
-                }
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
         required = (
@@ -710,13 +775,14 @@ def hook_scope_findings() -> list[dict[str, str]]:
         )
         if not isinstance(required, dict):
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         "Hook scope policy has invalid required_events "
                         f"for {tool}."
                     ),
-                }
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
         label, config = configs[tool]
@@ -730,13 +796,14 @@ def hook_scope_findings() -> list[dict[str, str]]:
                 )
             ):
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             "Hook scope policy has an invalid event entry "
                             f"for {tool}."
                         ),
-                    }
+                        scope="policy",
+                        owner="hub",
+                    )
                 )
                 continue
             actual = hook_commands_for_event(config, event)
@@ -747,34 +814,37 @@ def hook_scope_findings() -> list[dict[str, str]]:
                 )
                 if matched is None:
                     findings.append(
-                        {
-                            "severity": "attention",
-                            "message": (
+                        make_finding(
+                            (
                                 f"{label} {event} lifecycle hook is missing."
                             ),
-                        }
+                            scope="local",
+                            owner=tool,
+                        )
                     )
                     continue
                 missing_executable = hook_command_executable(matched)
                 if missing_executable == HOOK_PARSE_ERROR:
                     findings.append(
-                        {
-                            "severity": "attention",
-                            "message": (
+                        make_finding(
+                            (
                                 f"{label} {event} lifecycle hook command "
                                 "is malformed."
                             ),
-                        }
+                            scope="local",
+                            owner=tool,
+                        )
                     )
                 elif missing_executable:
                     findings.append(
-                        {
-                            "severity": "attention",
-                            "message": (
+                        make_finding(
+                            (
                                 f"{label} {event} lifecycle hook executable "
                                 f"is missing: {missing_executable}"
                             ),
-                        }
+                            scope="local",
+                            owner=tool,
+                        )
                     )
     return findings
 
@@ -790,10 +860,11 @@ def mcp_scope_findings() -> list[dict[str, str]]:
     policies = data.get("mcp", {}) if isinstance(data, dict) else {}
     if not isinstance(policies, dict):
         return [
-            {
-                "severity": "attention",
-                "message": "Tool scope policy has an invalid mcp section.",
-            }
+            make_finding(
+                "Tool scope policy has an invalid mcp section.",
+                scope="policy",
+                owner="hub",
+            )
         ]
 
     labels = {
@@ -820,18 +891,20 @@ def mcp_scope_findings() -> list[dict[str, str]]:
     for tool, policy in policies.items():
         if tool not in labels:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Tool scope policy has an unsupported MCP tool: {tool}",
-                }
+                make_finding(
+                    f"Tool scope policy has an unsupported MCP tool: {tool}",
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
         if not isinstance(policy, dict):
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Tool scope policy has an invalid MCP entry for {tool}.",
-                }
+                make_finding(
+                    f"Tool scope policy has an invalid MCP entry for {tool}.",
+                    scope="policy",
+                    owner="hub",
+                )
             )
             continue
 
@@ -843,10 +916,11 @@ def mcp_scope_findings() -> list[dict[str, str]]:
                 isinstance(value, str) and value.strip() for value in values
             ):
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": f"Tool scope policy has invalid {key} for {tool}.",
-                    }
+                    make_finding(
+                        f"Tool scope policy has invalid {key} for {tool}.",
+                        scope="policy",
+                        owner="hub",
+                    )
                 )
                 valid = False
                 continue
@@ -861,13 +935,14 @@ def mcp_scope_findings() -> list[dict[str, str]]:
         outside_allowlist = sorted(set(required) - set(allowed))
         if outside_allowlist:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         f"Invalid tool-only MCP policy for {tool}: "
                         "required_tool_only must be a subset of allowed_tool_only."
                     ),
-                }
+                    scope="policy",
+                    owner="hub",
+                )
             )
 
         inventory_tool = (
@@ -884,23 +959,25 @@ def mcp_scope_findings() -> list[dict[str, str]]:
         if "allowed_tool_only" in policy:
             for name in sorted(set(actual) - set(allowed)):
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             f"Unexpected tool-only MCP in {labels[tool]}: "
                             f"{actual[name]}"
                         ),
-                    }
+                        scope="local",
+                        owner=tool,
+                    )
                 )
         for name in sorted(set(required) - set(actual)):
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         f"Required tool-only MCP missing from {labels[tool]}: "
                         f"{required[name]}"
                     ),
-                }
+                    scope="local",
+                    owner=tool,
+                )
             )
     return findings
 
@@ -929,11 +1006,33 @@ def failed_runtime_names(tool: str, output: str) -> list[str]:
     return sorted(names)
 
 
+def classify_runtime_failure(
+    target: str,
+    name: str,
+    coverage: dict[str, dict[str, str]],
+) -> tuple[str, str]:
+    record = next(
+        (
+            value
+            for candidate, value in coverage.items()
+            if candidate.casefold() == name.casefold()
+        ),
+        {},
+    )
+    if (
+        record.get("owner") == "hub-managed"
+        and record.get("state") not in {"plugin-owned", "excluded"}
+    ):
+        return "managed", "hub"
+    return "local", target
+
+
 def cursor_loopback_http_findings(
     config_path: Path = HOME / ".cursor" / "mcp.json",
     *,
     opener: Any = urlopen,
     timeout: float = 2.0,
+    coverage: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, str]], bool]:
     """Probe Cursor loopback HTTP MCP GET behavior without credentials."""
     if not config_path.exists():
@@ -948,6 +1047,7 @@ def cursor_loopback_http_findings(
         return [], False
 
     findings: list[dict[str, str]] = []
+    coverage = coverage or {}
     checked = False
     for name, config in servers.items():
         if not isinstance(name, str) or not isinstance(config, dict):
@@ -972,23 +1072,35 @@ def cursor_loopback_http_findings(
             response.close()
         except HTTPError as exc:
             if exc.code == 404:
+                scope, owner = classify_runtime_failure(
+                    "cursor",
+                    name,
+                    coverage,
+                )
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             "Cursor HTTP MCP is not Streamable HTTP "
                             f"compatible: {name}"
                         ),
-                    }
+                        scope=scope,
+                        owner=owner,
+                    )
                 )
         except (URLError, TimeoutError, OSError):
+            scope, owner = classify_runtime_failure(
+                "cursor",
+                name,
+                coverage,
+            )
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         f"Cursor HTTP MCP connection failed: {name}"
                     ),
-                }
+                    scope=scope,
+                    owner=owner,
+                )
             )
     return findings, checked
 
@@ -996,18 +1108,22 @@ def cursor_loopback_http_findings(
 def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
     """Run bounded, read-only CLI probes and keep only sanitized outcomes."""
     probes = [
-        ("OpenCode", "opencode", ["mcp", "list"], 30),
-        ("Claude", "claude", ["mcp", "list"], 90),
+        ("OpenCode", "opencode", "opencode", ["mcp", "list"], 30),
+        ("Claude", "claude", "claude", ["mcp", "list"], 90),
     ]
-    findings, cursor_checked = cursor_loopback_http_findings()
+    cursor_coverage = resolve_mcp_coverage("cursor", HOME, HUB)
+    findings, cursor_checked = cursor_loopback_http_findings(
+        coverage=cursor_coverage,
+    )
     checked: list[str] = []
     if cursor_checked:
         checked.append("Cursor")
     common_timeout = os.environ.get("AGENT_SYNC_RUNTIME_TIMEOUT")
-    for label, executable, arguments, default_timeout in probes:
+    for label, target, executable, arguments, default_timeout in probes:
         command = shutil.which(executable)
         if not command:
             continue
+        coverage = resolve_mcp_coverage(target, HOME, HUB)
         checked.append(label)
         tool_timeout = os.environ.get(
             f"AGENT_SYNC_RUNTIME_TIMEOUT_{label.upper()}"
@@ -1029,18 +1145,20 @@ def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
             )
         except subprocess.TimeoutExpired:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Runtime MCP probe timed out for {label}.",
-                }
+                make_finding(
+                    f"Runtime MCP probe timed out for {label}.",
+                    scope="local",
+                    owner=target,
+                )
             )
             continue
         except OSError:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Runtime MCP probe could not start for {label}.",
-                }
+                make_finding(
+                    f"Runtime MCP probe could not start for {label}.",
+                    scope="local",
+                    owner=target,
+                )
             )
             continue
         output = result.stdout + "\n" + result.stderr
@@ -1060,18 +1178,21 @@ def runtime_mcp_findings() -> tuple[list[dict[str, str]], list[str]]:
                 output = result.stdout + "\n" + result.stderr
                 failed = failed_runtime_names(label, output)
         for name in failed:
+            scope, owner = classify_runtime_failure(target, name, coverage)
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Runtime MCP connection failed in {label}: {name}",
-                }
+                make_finding(
+                    f"Runtime MCP connection failed in {label}: {name}",
+                    scope=scope,
+                    owner=owner,
+                )
             )
         if result.returncode and not failed:
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": f"Runtime MCP probe failed for {label}.",
-                }
+                make_finding(
+                    f"Runtime MCP probe failed for {label}.",
+                    scope="local",
+                    owner=target,
+                )
             )
     return findings, checked
 
@@ -1327,28 +1448,31 @@ def rule_findings() -> list[dict[str, str]]:
         for target in targets:
             if not target.exists():
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": f"Missing rule target {target.name}: {rule.name}",
-                    }
+                    make_finding(
+                        f"Missing rule target {target.name}: {rule.name}",
+                        scope="managed",
+                        owner="hub",
+                    )
                 )
                 continue
             text = target.read_text(encoding="utf-8")
             if text.count(begin) != 1 or text.count(end) != 1:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": f"Missing or duplicate synced rule in {target.name}: {rule.name}",
-                    }
+                    make_finding(
+                        f"Missing or duplicate synced rule in {target.name}: {rule.name}",
+                        scope="managed",
+                        owner="hub",
+                    )
                 )
                 continue
             block = text.split(begin, 1)[1].split(end, 1)[0]
             if content not in block:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": f"Drifted synced rule in {target.name}: {rule.name}",
-                    }
+                    make_finding(
+                        f"Drifted synced rule in {target.name}: {rule.name}",
+                        scope="managed",
+                        owner="hub",
+                    )
                 )
     return findings
 
@@ -1361,12 +1485,13 @@ def effective_mcp_findings() -> list[dict[str, str]]:
             state = ownership["state"]
             if state not in accepted:
                 findings.append(
-                    {
-                        "severity": "attention",
-                        "message": (
+                    make_finding(
+                        (
                             f"{record['name']} shared MCP {name} is {state}."
                         ),
-                    }
+                        scope="managed",
+                        owner="hub",
+                    )
                 )
     return findings
 
@@ -1376,7 +1501,8 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
     shared = read_shared_mcp()
     agents = target_records(skills, shared)
     findings = (
-        rule_findings()
+        policy_file_findings()
+        + rule_findings()
         + mcp_usability_findings()
         + configured_mcp_findings()
         + sensitive_config_findings()
@@ -1392,10 +1518,35 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
         runtime_findings, runtime_checked = runtime_mcp_findings()
         findings.extend(runtime_findings)
     for agent in agents:
+        local_owner = {
+            "Codex / ChatGPT": "codex",
+            "Claude": "claude",
+            "Cursor": "cursor",
+            "Gemini CLI": "gemini",
+            "Gemini global": "gemini-global",
+            "Antigravity App": "antigravity-app",
+            "Antigravity CLI": "antigravity-cli",
+            "Antigravity IDE": "antigravity-ide",
+            "OpenCode": "opencode",
+            "Copilot / VS Code": "vscode",
+            "Hermes": "hermes",
+        }.get(agent["name"], agent["name"].casefold())
         if agent["name"] != "Agents" and not agent["config_present"]:
-            findings.append({"severity": "attention", "message": f"{agent['name']} is supported but has no local configuration."})
+            findings.append(
+                make_finding(
+                    f"{agent['name']} is supported but has no local configuration.",
+                    scope="local",
+                    owner=local_owner,
+                )
+            )
         if agent["skills"]["expected"] and agent["skills"]["configured"] != agent["skills"]["expected"]:
-            findings.append({"severity": "attention", "message": f"{agent['name']} skill coverage is incomplete."})
+            findings.append(
+                make_finding(
+                    f"{agent['name']} skill coverage is incomplete.",
+                    scope="managed",
+                    owner="hub",
+                )
+            )
         if (
             agent["managed_skills"]["expected"]
             and agent["managed_skills"]["configured"]
@@ -1403,18 +1554,31 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
             and agent["skills"]["configured"] == agent["skills"]["expected"]
         ):
             findings.append(
-                {
-                    "severity": "attention",
-                    "message": (
+                make_finding(
+                    (
                         f"{agent['name']} skill ownership is not Hub-managed."
                     ),
-                }
+                    scope="managed",
+                    owner="hub",
+                )
             )
         if agent["mcp"]["expected"] and agent["mcp"]["configured"] != agent["mcp"]["expected"]:
-            findings.append({"severity": "attention", "message": f"{agent['name']} shared MCP coverage is incomplete or command-managed."})
+            findings.append(
+                make_finding(
+                    f"{agent['name']} shared MCP coverage is incomplete or command-managed.",
+                    scope="managed",
+                    owner="hub",
+                )
+            )
         for profile in agent.get("profiles", []):
             if profile["mcp"]["configured"] != profile["mcp"]["expected"]:
-                findings.append({"severity": "attention", "message": f"VS Code profile {profile['id']} shared MCP coverage is incomplete."})
+                findings.append(
+                    make_finding(
+                        f"VS Code profile {profile['id']} shared MCP coverage is incomplete.",
+                        scope="managed",
+                        owner="hub",
+                    )
+                )
     return {
         "overall": "ATTENTION" if findings else "HEALTHY",
         "agents": agents,

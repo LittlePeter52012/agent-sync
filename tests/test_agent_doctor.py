@@ -56,6 +56,97 @@ class AgentDoctorTests(unittest.TestCase):
             check=check,
         )
 
+    def load_doctor_module(self):
+        sys.path.insert(0, str(REPO / "scripts"))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "agent_doctor_test_module",
+                DOCTOR,
+            )
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            return module
+        finally:
+            sys.path.pop(0)
+
+    def test_findings_expose_scope_and_owner(self):
+        (self.home / ".claude.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "broken-tool-only": {
+                            "command": "definitely-missing-tool-only-command"
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        findings = json.loads(self.run_doctor().stdout)["findings"]
+
+        self.assertTrue(findings)
+        self.assertTrue(
+            all(
+                {"severity", "message", "scope", "owner"} <= set(item)
+                for item in findings
+            )
+        )
+        tool_only = next(
+            item for item in findings
+            if "broken-tool-only" in item["message"]
+        )
+        self.assertEqual(tool_only["scope"], "local")
+        self.assertEqual(tool_only["owner"], "claude")
+
+    def test_malformed_policy_finding_is_hub_owned(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text("{", encoding="utf-8")
+
+        findings = json.loads(self.run_doctor().stdout)["findings"]
+        malformed_policy = next(
+            item for item in findings
+            if "invalid JSON" in item["message"]
+        )
+
+        self.assertEqual(malformed_policy["scope"], "policy")
+        self.assertEqual(malformed_policy["owner"], "hub")
+
+    def test_runtime_failure_classification_is_target_specific(self):
+        module = self.load_doctor_module()
+
+        self.assertEqual(
+            module.classify_runtime_failure(
+                "cursor",
+                "shared",
+                {
+                    "shared": {
+                        "state": "plugin-owned",
+                        "owner": "plugin:example",
+                    }
+                },
+            ),
+            ("local", "cursor"),
+        )
+        self.assertEqual(
+            module.classify_runtime_failure(
+                "cursor",
+                "shared",
+                {"shared": {"state": "excluded", "owner": "excluded"}},
+            ),
+            ("local", "cursor"),
+        )
+        self.assertEqual(
+            module.classify_runtime_failure(
+                "cursor",
+                "shared",
+                {"shared": {"state": "drifted", "owner": "hub-managed"}},
+            ),
+            ("managed", "hub"),
+        )
+
     def test_json_reports_synced_codex_without_secret_values(self):
         result = self.run_doctor()
         report = json.loads(result.stdout)
@@ -157,17 +248,7 @@ class AgentDoctorTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        sys.path.insert(0, str(REPO / "scripts"))
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "agent_doctor_test_module",
-                DOCTOR,
-            )
-            module = importlib.util.module_from_spec(spec)
-            assert spec.loader is not None
-            spec.loader.exec_module(module)
-        finally:
-            sys.path.pop(0)
+        module = self.load_doctor_module()
 
         def opener(request, timeout):
             raise HTTPError(
@@ -773,6 +854,12 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("broken-tool-only", messages)
         self.assertIn("retired-tool", messages)
         self.assertIn("Claude", messages)
+        retired_residue = next(
+            item for item in report["findings"]
+            if "Retired MCP still configured" in item["message"]
+        )
+        self.assertEqual(retired_residue["scope"], "managed")
+        self.assertEqual(retired_residue["owner"], "hub")
 
     def test_doctor_runtime_reports_failed_mcp_without_raw_output(self):
         fake_bin = Path(self.tempdir.name) / "bin"
