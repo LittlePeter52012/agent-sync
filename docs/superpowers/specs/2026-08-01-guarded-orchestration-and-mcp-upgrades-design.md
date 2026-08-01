@@ -33,10 +33,14 @@ public `agent-sync` repository free of personal credentials and private policy.
   `uvx mineru-open-mcp` and Obsidian through
   `npx @mauricio.wolff/mcp-obsidian@latest`. A passing sync can therefore run
   different upstream code on different days.
-- As checked on 2026-08-01, the current stable registry versions are
-  `mineru-open-mcp==1.0.21` on PyPI and
-  `@mauricio.wolff/mcp-obsidian@0.8.2` on npm. These are initial candidates,
-  not a reason to trust future latest versions automatically.
+- As checked on 2026-08-01, `mineru-open-mcp==1.0.21` is the current PyPI
+  stable release. The current Obsidian launcher
+  `@mauricio.wolff/mcp-obsidian` is deprecated at `0.8.2`; upstream renamed it
+  to `@bitbonsai/mcpvault`, whose current stable release was `0.12.5` at the
+  2026-08-01 registry check. The new
+  package preserves the local stdio launcher and vault-path argument while
+  adding later security fixes. This is a reviewed package migration, not a
+  reason to trust future latest versions automatically.
 - Doctor currently represents the combined `Copilot / VS Code` surface with
   one `vscode` target key even though the Skill directory is managed under the
   `copilot` target and the MCP configuration is managed under `vscode`. This
@@ -108,17 +112,22 @@ agent-sync deps check [--json]
 agent-sync deps pin SERVER VERSION [--dry-run|--apply]
 ```
 
-`deps check` is read-only. It parses exact package requirements from Hub MCP
-entries, queries the corresponding primary registry, and returns only package,
-installed pin, available stable version, ecosystem, and upstream metadata
-links. It never prints environment values, headers, OAuth data, vault paths,
-or account identifiers. Network failure produces an `unknown` result rather
-than a broken-Hub verdict.
+`deps check` is read-only. It recognizes exact, `latest`, and unversioned
+package requirements in Hub MCP entries, queries the corresponding primary
+registry, and returns only package, current pin state, available stable
+version, deprecation state, ecosystem, and upstream metadata links. This lets
+the first run diagnose the Hub's existing unpinned entries instead of refusing
+to inspect them. It never prints environment values, headers, OAuth data,
+vault paths, or account identifiers. Network failure produces an `unknown`
+result rather than a broken-Hub verdict.
 
 `deps pin` changes only the version component of an already recognized Hub
-package requirement. It cannot rename the package, change the executable,
-modify environment fields, or edit target copies directly. `--dry-run` is the
-default; `--apply` requires an exact version and a clean, reviewable Hub diff.
+package requirement, including conversion from `latest` or unversioned to an
+exact pin. It cannot rename the package, change the executable, modify
+environment fields, or edit target copies directly. A deprecated-package
+rename is a separate, explicit Hub migration supported by primary upstream
+evidence and a candidate smoke test. `--dry-run` is the default; `--apply`
+requires an exact version and a clean, reviewable Hub diff.
 
 When an Agent is asked to maintain or synchronize configuration, the
 synchronized rule requires this sequence:
@@ -188,13 +197,17 @@ questions and must not be collapsed into one exit code.
 - `agent-sync verify --strict` retains its current all-surface compatibility
   behavior.
 - `agent-sync verify --strict --scope managed` checks Hub-managed Skills,
-  shared MCPs, rules, and their required runtime coverage. Product-owned and
-  tool-only runtime findings remain visible but do not falsely fail the managed
-  synchronization result.
+  shared MCPs, rules, their required runtime coverage, and all malformed Hub
+  policy. Product-owned and tool-only runtime findings remain visible but do
+  not falsely fail the managed synchronization result. A same-name runtime is
+  managed only when target-specific coverage says its owner is `hub-managed`;
+  plugin-owned or excluded capabilities remain local findings. A retired Hub
+  MCP left in any product configuration is a managed retirement failure.
 - `agent-sync doctor --runtime --strict` remains the full machine-health gate
   and may fail for a broken product-owned or tool-only capability.
-- `agent-sync all` uses the managed scope for its synchronization verdict, then
-  prints the separate full Doctor summary.
+- `agent-sync all` runs one full runtime Doctor report and uses only its managed
+  findings for the synchronization exit gate. Product-owned and tool-only
+  findings stay visible in that same report, avoiding a second expensive probe.
 
 Every finding includes `scope` and `owner` in JSON output so callers do not
 infer ownership from a label.
@@ -225,7 +238,8 @@ availability belongs to the separate dependency check.
 - Plugin evidence is stale or ambiguous: keep the Hub capability and report
   uncertainty; never delete a product plugin.
 - Copilot/VS Code policy migration: no auth files are donors or destinations.
-  A failing fixture or changed account-state hash blocks the change.
+  Temporary-HOME fixtures, command review, and repository diffs prove the
+  boundary without reading or hashing account stores.
 - Orchestration begins to fan out: the main Agent stops new delegation,
   collects existing results once, and resumes with a compact evidence summary.
 
@@ -252,8 +266,9 @@ step after implementation succeeds.
    a depth-2 helper is instructed and tested as terminal.
 2. No local Codex concurrency/model defaults are reintroduced; product
    defaults remain authoritative.
-3. MinerU and Obsidian Hub launch specifications are exactly pinned and their
-   MCP initialization/tool-list smoke tests pass.
+3. MinerU is pinned to an exact stable version, the deprecated Obsidian package
+   is migrated to an exact stable `@bitbonsai/mcpvault` release, and both MCP
+   initialization/tool-list smoke tests pass.
 4. `deps check --json` reports current and available versions deterministically
    for pinned npm/PyPI entries and degrades safely offline.
 5. `deps pin` refuses package renames, prerelease ambiguity, unrecognized
@@ -269,4 +284,3 @@ step after implementation succeeds.
 10. The focused test suite, complete public suite, Hub test, privacy audit,
     two consecutive idempotent syncs, final status, and runtime Doctor pass
     before either repository is pushed.
-
