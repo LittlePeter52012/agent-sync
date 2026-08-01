@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +21,7 @@ _NPM_PACKAGE = re.compile(
 )
 _PYPI_PACKAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_XATTR_NAME = re.compile(r"[A-Za-z0-9._-]+\Z")
 _MAX_REGISTRY_RESPONSE = 2 * 1024 * 1024
 
 
@@ -29,6 +33,12 @@ class DependencySpec:
     version: str | None
     pin_state: str
     argument_index: int
+
+
+@dataclass(frozen=True)
+class FileMetadata:
+    stat: os.stat_result
+    xattrs: tuple[str, ...]
 
 
 class DependencyError(ValueError):
@@ -294,12 +304,186 @@ def _target_is_available(
     return False
 
 
-def _atomic_write(path: Path, content: str) -> None:
+def _regular_file_metadata(path: Path) -> FileMetadata:
+    try:
+        source = path.lstat()
+    except OSError:
+        raise DependencyError("MCP dependency config is unavailable") from None
+    if stat.S_ISLNK(source.st_mode):
+        raise DependencyError("MCP dependency config cannot be a symlink")
+    if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
+        raise DependencyError("MCP dependency config is not a regular file")
+    if getattr(source, "st_flags", 0):
+        raise DependencyError("MCP dependency config has unsupported metadata")
+    return FileMetadata(source, _xattr_names(path))
+
+
+def _xattr_names(path: Path) -> tuple[str, ...]:
+    if hasattr(os, "listxattr"):
+        try:
+            return tuple(sorted(os.listxattr(path, follow_symlinks=False)))
+        except OSError:
+            raise DependencyError("MCP dependency config metadata is unsupported") from None
+    if sys.platform != "darwin":
+        raise DependencyError("MCP dependency config metadata is unsupported")
+
+    try:
+        result = subprocess.run(
+            ["/usr/bin/xattr", str(path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        raise DependencyError("MCP dependency config metadata is unsupported") from None
+    if result.returncode != 0:
+        raise DependencyError("MCP dependency config metadata is unsupported")
+    try:
+        names = tuple(sorted(result.stdout.decode("utf-8").splitlines()))
+    except UnicodeDecodeError:
+        raise DependencyError("MCP dependency config metadata is unsupported") from None
+    if not all(_XATTR_NAME.fullmatch(name) for name in names):
+        raise DependencyError("MCP dependency config has unsupported metadata")
+    if _has_macos_acl(path):
+        raise DependencyError("MCP dependency config has unsupported metadata")
+    return names
+
+
+def _has_macos_acl(path: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["/bin/ls", "-le", str(path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return True
+    return result.returncode != 0 or len(result.stdout.splitlines()) > 1
+
+
+def _copy_xattrs(source: Path, target: Path, names: tuple[str, ...]) -> None:
+    try:
+        target_names = _xattr_names(target)
+        for name in target_names:
+            if name not in names:
+                _remove_xattr(target, name)
+        for name in names:
+            value = _read_xattr(source, name)
+            _write_xattr(target, name, value)
+            if _read_xattr(target, name) != value:
+                raise DependencyError("MCP dependency file metadata cannot be preserved")
+        if _xattr_names(target) != names:
+            raise DependencyError("MCP dependency file metadata cannot be preserved")
+    except DependencyError:
+        raise
+    except OSError:
+        raise DependencyError("MCP dependency file metadata cannot be preserved") from None
+
+
+def _read_xattr(path: Path, name: str) -> bytes:
+    if hasattr(os, "getxattr"):
+        return os.getxattr(path, name, follow_symlinks=False)
+    result = subprocess.run(
+        ["/usr/bin/xattr", "-px", name, str(path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    value = b"".join(result.stdout.split())
+    if result.returncode != 0 or not re.fullmatch(rb"[0-9A-Fa-f]*", value):
+        raise DependencyError("MCP dependency file metadata cannot be preserved")
+    return value
+
+
+def _write_xattr(path: Path, name: str, value: bytes) -> None:
+    if hasattr(os, "setxattr"):
+        os.setxattr(path, name, value, follow_symlinks=False)
+        return
+    result = subprocess.run(
+        ["/usr/bin/xattr", "-wx", name, value.decode("ascii"), str(path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise DependencyError("MCP dependency file metadata cannot be preserved")
+
+
+def _remove_xattr(path: Path, name: str) -> None:
+    if hasattr(os, "removexattr"):
+        os.removexattr(path, name, follow_symlinks=False)
+        return
+    result = subprocess.run(
+        ["/usr/bin/xattr", "-d", name, str(path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise DependencyError("MCP dependency file metadata cannot be preserved")
+
+
+def _same_source(left: FileMetadata, right: FileMetadata) -> bool:
+    return (
+        left.stat.st_dev,
+        left.stat.st_ino,
+        left.stat.st_size,
+        left.stat.st_mtime_ns,
+        left.stat.st_ctime_ns,
+        left.stat.st_mode,
+        left.stat.st_uid,
+        left.stat.st_gid,
+        left.xattrs,
+    ) == (
+        right.stat.st_dev,
+        right.stat.st_ino,
+        right.stat.st_size,
+        right.stat.st_mtime_ns,
+        right.stat.st_ctime_ns,
+        right.stat.st_mode,
+        right.stat.st_uid,
+        right.stat.st_gid,
+        right.xattrs,
+    )
+
+
+def _preserve_regular_file_metadata(
+    descriptor: int, source: FileMetadata
+) -> None:
+    try:
+        temporary = os.fstat(descriptor)
+        if (temporary.st_uid, temporary.st_gid) != (
+            source.stat.st_uid,
+            source.stat.st_gid,
+        ):
+            os.fchown(descriptor, source.stat.st_uid, source.stat.st_gid)
+        os.fchmod(descriptor, stat.S_IMODE(source.stat.st_mode))
+        temporary = os.fstat(descriptor)
+    except OSError:
+        raise DependencyError("MCP dependency file metadata cannot be preserved") from None
+    if (temporary.st_uid, temporary.st_gid) != (
+        source.stat.st_uid,
+        source.stat.st_gid,
+    ) or (
+        stat.S_IMODE(temporary.st_mode) != stat.S_IMODE(source.stat.st_mode)
+    ):
+        raise DependencyError("MCP dependency file metadata cannot be preserved")
+
+
+def _atomic_write(path: Path, content: bytes, source: FileMetadata) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=path.parent
     )
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary:
+        _preserve_regular_file_metadata(descriptor, source)
+        _copy_xattrs(path, Path(temporary_name), source.xattrs)
+        with os.fdopen(descriptor, "wb") as temporary:
             temporary.write(content)
         os.replace(temporary_name, path)
     except Exception:
@@ -321,6 +505,8 @@ def pin_dependency(
     if not isinstance(version, str) or not _NUMERIC_VERSION.fullmatch(version):
         raise DependencyError("invalid MCP dependency target version")
 
+    config_path = hub / "mcp" / "shared-servers.json"
+    source = _regular_file_metadata(config_path)
     spec = next(
         (item for item in discover_dependencies(hub) if item.server == server),
         None,
@@ -330,8 +516,7 @@ def pin_dependency(
     if not _target_is_available(spec, version, fetch_json):
         raise DependencyError("MCP dependency target is unavailable")
 
-    config_path = hub / "mcp" / "shared-servers.json"
-    original = config_path.read_text(encoding="utf-8")
+    original = config_path.read_bytes()
     document = json.loads(original)
     config = document.get("mcpServers", {}).get(server)
     if not isinstance(config, dict):
@@ -345,11 +530,13 @@ def pin_dependency(
 
     separator = "==" if spec.ecosystem == "pypi" else "@"
     new_argument = f"{spec.package}{separator}{version}"
-    old_token = json.dumps(old_argument)
+    old_token = json.dumps(old_argument).encode("utf-8")
     if original.count(old_token) != 1:
         raise DependencyError("MCP dependency argument is not uniquely replaceable")
-    proposed = original.replace(old_token, json.dumps(new_argument), 1)
+    proposed = original.replace(old_token, json.dumps(new_argument).encode("utf-8"), 1)
 
     if apply:
-        _atomic_write(config_path, proposed)
-    return proposed
+        if not _same_source(source, _regular_file_metadata(config_path)):
+            raise DependencyError("MCP dependency config changed during pinning")
+        _atomic_write(config_path, proposed, source)
+    return proposed.decode("utf-8")

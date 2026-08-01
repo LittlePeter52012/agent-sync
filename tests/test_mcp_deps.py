@@ -1,6 +1,9 @@
 import importlib.util
 import io
 import json
+import os
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -202,6 +205,131 @@ class McpDependencyTests(unittest.TestCase):
                 "mineru-open-mcp==1.0.21", "mineru-open-mcp==1.0.22"
             ),
         )
+
+    def test_pin_apply_preserves_regular_file_mode_and_ownership(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+        os.chmod(self.shared_path, 0o640)
+        before = self.shared_path.stat()
+
+        MCP_DEPS.pin_dependency(
+            self.hub,
+            "mineru",
+            "1.0.22",
+            apply=True,
+            fetch_json=self.fetch_json,
+        )
+
+        after = self.shared_path.stat()
+        self.assertEqual(stat.S_IMODE(after.st_mode), stat.S_IMODE(before.st_mode))
+        self.assertEqual((after.st_uid, after.st_gid), (before.st_uid, before.st_gid))
+
+    def test_pin_apply_preserves_extended_attributes(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+        attribute = "com.openai.agent-sync-task3"
+        set_attribute = subprocess.run(
+            [
+                "/usr/bin/xattr",
+                "-wx",
+                attribute,
+                "01020304",
+                str(self.shared_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if set_attribute.returncode != 0:
+            self.skipTest("extended attributes are unavailable")
+        before = subprocess.run(
+            ["/usr/bin/xattr", "-px", attribute, str(self.shared_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout
+
+        MCP_DEPS.pin_dependency(
+            self.hub,
+            "mineru",
+            "1.0.22",
+            apply=True,
+            fetch_json=self.fetch_json,
+        )
+
+        after = subprocess.run(
+            ["/usr/bin/xattr", "-px", attribute, str(self.shared_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout
+        self.assertEqual(after, before)
+
+    def test_pin_refuses_file_level_symlinks_for_dry_runs_and_apply(self):
+        target = self.hub / "canonical-shared-servers.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "mineru": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.21"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.shared_path.parent.mkdir(exist_ok=True)
+        self.shared_path.symlink_to(target)
+        before = target.read_bytes()
+
+        for apply in (False, True):
+            with self.subTest(apply=apply):
+                with self.assertRaisesRegex(
+                    DependencyError, "MCP dependency config cannot be a symlink"
+                ):
+                    MCP_DEPS.pin_dependency(
+                        self.hub,
+                        "mineru",
+                        "1.0.22",
+                        apply=apply,
+                        fetch_json=self.fetch_json,
+                    )
+
+                self.assertTrue(self.shared_path.is_symlink())
+                self.assertEqual(target.read_bytes(), before)
+
+    def test_pin_apply_preserves_original_newline_and_whitespace_bytes(self):
+        for newline in (b"\r\n", b"\r"):
+            with self.subTest(newline=newline):
+                self.shared_path.parent.mkdir(exist_ok=True)
+                before = (
+                    b"{" + newline
+                    + b"  \"mcpServers\" : {" + newline
+                    + b"    \"mineru\" : { \"command\" : \"uvx\", \"args\" : [ \"mineru-open-mcp==1.0.21\" ] }"
+                    + newline
+                    + b"  }" + newline
+                    + b"}\t " + newline
+                )
+                self.shared_path.write_bytes(before)
+
+                MCP_DEPS.pin_dependency(
+                    self.hub,
+                    "mineru",
+                    "1.0.22",
+                    apply=True,
+                    fetch_json=self.fetch_json,
+                )
+
+                self.assertEqual(
+                    self.shared_path.read_bytes(),
+                    before.replace(
+                        b"mineru-open-mcp==1.0.21", b"mineru-open-mcp==1.0.22"
+                    ),
+                )
 
     def test_pin_converts_unversioned_and_latest_dependencies_to_exact_versions(self):
         fixtures = (
