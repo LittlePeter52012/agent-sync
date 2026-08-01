@@ -3,11 +3,11 @@ import io
 import json
 import os
 import stat
-import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.error import HTTPError, URLError
 
 
@@ -48,6 +48,11 @@ class McpDependencyTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.hub = Path(self.temp_dir.name)
         self.shared_path = self.hub / "mcp" / "shared-servers.json"
+        self.xattr_guard = mock.patch.object(
+            MCP_DEPS, "_has_xattrs", return_value=False
+        )
+        self.xattr_guard.start()
+        self.addCleanup(self.xattr_guard.stop)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -225,47 +230,131 @@ class McpDependencyTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(after.st_mode), stat.S_IMODE(before.st_mode))
         self.assertEqual((after.st_uid, after.st_gid), (before.st_uid, before.st_gid))
 
-    def test_pin_apply_preserves_extended_attributes(self):
+    def test_pin_refuses_extended_attributes_without_reading_values(self):
         self.write_config(
             {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
         )
-        attribute = "com.openai.agent-sync-task3"
-        set_attribute = subprocess.run(
-            [
-                "/usr/bin/xattr",
-                "-wx",
-                attribute,
-                "01020304",
-                str(self.shared_path),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if set_attribute.returncode != 0:
-            self.skipTest("extended attributes are unavailable")
-        before = subprocess.run(
-            ["/usr/bin/xattr", "-px", attribute, str(self.shared_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-        ).stdout
+        before = self.shared_path.read_bytes()
 
-        MCP_DEPS.pin_dependency(
-            self.hub,
-            "mineru",
-            "1.0.22",
-            apply=True,
-            fetch_json=self.fetch_json,
+        with mock.patch.object(MCP_DEPS, "_has_xattrs", return_value=True):
+            with self.assertRaisesRegex(
+                DependencyError, "MCP dependency config has unsupported metadata"
+            ):
+                MCP_DEPS.pin_dependency(
+                    self.hub,
+                    "mineru",
+                    "1.0.22",
+                    apply=True,
+                    fetch_json=self.fetch_json,
+                )
+
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_pin_refuses_darwin_acl_with_native_xattr_helper(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
         )
 
-        after = subprocess.run(
-            ["/usr/bin/xattr", "-px", attribute, str(self.shared_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-        ).stdout
-        self.assertEqual(after, before)
+        with mock.patch.object(MCP_DEPS, "_has_xattrs", return_value=False), mock.patch.object(
+            MCP_DEPS, "_has_macos_acl", return_value=True
+        ), mock.patch.object(
+            MCP_DEPS.sys, "platform", "darwin"
+        ):
+            with self.assertRaisesRegex(
+                DependencyError, "MCP dependency config has unsupported metadata"
+            ):
+                MCP_DEPS.pin_dependency(
+                    self.hub,
+                    "mineru",
+                    "1.0.22",
+                    apply=False,
+                    fetch_json=self.fetch_json,
+                )
+
+    def test_pin_refuses_special_file_mode_bits(self):
+        for bit in (stat.S_ISUID, stat.S_ISGID, stat.S_ISVTX):
+            with self.subTest(bit=bit):
+                self.write_config(
+                    {
+                        "mineru": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.21"],
+                        }
+                    }
+                )
+                os.chmod(self.shared_path, 0o640 | bit)
+                before = self.shared_path.read_bytes()
+
+                with mock.patch.object(MCP_DEPS, "_has_xattrs", return_value=False):
+                    with self.assertRaisesRegex(
+                        DependencyError, "MCP dependency config has unsupported metadata"
+                    ):
+                        MCP_DEPS.pin_dependency(
+                            self.hub,
+                            "mineru",
+                            "1.0.22",
+                            apply=True,
+                            fetch_json=self.fetch_json,
+                        )
+
+                self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_pin_sanitizes_write_failures_and_cleans_up_temporary_files(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+        before = self.shared_path.read_bytes()
+        failures = (
+            ("fsync", "fsync", OSError("untrusted filesystem detail")),
+            ("replace", "replace", OSError("untrusted filesystem detail")),
+            ("fchmod", "fchmod", RuntimeError("untrusted filesystem detail")),
+        )
+
+        for label, name, error in failures:
+            with self.subTest(label=label):
+                with mock.patch.object(MCP_DEPS, "_has_xattrs", return_value=False), mock.patch.object(
+                    MCP_DEPS.os,
+                    name,
+                    side_effect=error,
+                ):
+                    with self.assertRaisesRegex(
+                        DependencyError, "^MCP dependency update failed$") as raised:
+                        MCP_DEPS.pin_dependency(
+                            self.hub,
+                            "mineru",
+                            "1.0.22",
+                            apply=True,
+                            fetch_json=self.fetch_json,
+                        )
+
+                self.assertNotIn("untrusted filesystem detail", str(raised.exception))
+                self.assertEqual(self.shared_path.read_bytes(), before)
+                self.assertEqual(
+                    list(self.shared_path.parent.glob(".shared-servers.json.*")), []
+                )
+
+    def test_pin_sanitizes_config_read_failures(self):
+        self.write_config(
+            {"mineru": {"command": "uvx", "args": ["mineru-open-mcp==1.0.21"]}}
+        )
+
+        with mock.patch.object(
+            MCP_DEPS.Path,
+            "read_bytes",
+            side_effect=OSError("untrusted filesystem detail"),
+        ):
+            with self.assertRaisesRegex(
+                DependencyError, "^MCP dependency config is unavailable$"
+            ) as raised:
+                MCP_DEPS.pin_dependency(
+                    self.hub,
+                    "mineru",
+                    "1.0.22",
+                    apply=False,
+                    fetch_json=self.fetch_json,
+                )
+
+        self.assertNotIn("untrusted filesystem detail", str(raised.exception))
 
     def test_pin_refuses_file_level_symlinks_for_dry_runs_and_apply(self):
         target = self.hub / "canonical-shared-servers.json"
