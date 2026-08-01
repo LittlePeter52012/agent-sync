@@ -5,7 +5,7 @@
 # (default: ~/.config/agent-hub), not in this repository.
 #
 # Usage:
-#   agent-sync sync|sources|trace|skills|mcp|rules|hermes|multica|deploy|all|list|verify|test|status|doctor|fix|bench|update|push|help
+#   agent-sync sync|sources|trace|deps|skills|mcp|rules|hermes|multica|deploy|all|list|verify|test|status|doctor|fix|bench|update|push|help
 #
 # Environment:
 #   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
@@ -43,6 +43,10 @@ Commands:
                      Hub → all tools, or TOOL → Hub → all tools
   sources [--json]   Rank local MCP configs as promotion candidates
   trace mcp NAME     Show secret-free MCP ownership and locations
+  deps check [--json] [--refresh]
+  deps pin SERVER VERSION [--dry-run|--apply]
+  deps smoke SERVER [--target TARGET] [--timeout SECONDS]
+                     Review and maintain exact MCP dependency pins
   skills [--force]   Symlink whitelist skills from hub to all tools
   mcp                Merge shared MCP into tool configs (keeps tool-only servers)
   rules              Inject rule blocks into CLAUDE/AGENTS/GEMINI/Copilot
@@ -166,6 +170,10 @@ case "$cmd" in
         require_hub
         exec python3 "$SCRIPTS/trace-config.py" "$@"
         ;;
+    deps)
+        require_hub
+        exec python3 "$SCRIPTS/mcp-deps.py" "$@" --hub "$HUB"
+        ;;
     skills)
         require_hub
         bash "$SCRIPTS/sync-skills.sh" --method=symlink "$@"
@@ -196,6 +204,7 @@ case "$cmd" in
     all)
         require_hub
         maybe_auto_update
+        python3 "$SCRIPTS/mcp-deps.py" check --hub "$HUB" --cached --quiet || true
         run_full_sync "$@"
         exec python3 "$SCRIPTS/agent-doctor.py" --runtime --strict --scope managed
         ;;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import importlib.util
 import math
@@ -34,6 +35,24 @@ _MCP_PROTOCOL_VERSION = "2025-06-18"
 _SHUTDOWN_GRACE = 0.1
 _SAFE_SERVER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _OS_MANAGED_XATTRS = frozenset({"com.apple.provenance"})
+_CACHE_TTL = 86400
+_CACHE_KEYS = frozenset({"checked_at", "dependencies"})
+_CACHE_RECORD_KEYS = frozenset(
+    {
+        "server",
+        "ecosystem",
+        "package",
+        "current",
+        "latest",
+        "pin_state",
+        "status",
+        "deprecated",
+        "metadata_url",
+    }
+)
+_SENSITIVE_CACHE_KEY = re.compile(
+    r"token|secret|password|header|oauth|vault|path", re.IGNORECASE
+)
 _STREAM_EOF = object()
 _STREAM_LIMIT = object()
 
@@ -285,6 +304,144 @@ def check_dependencies(
             }
         )
     return results
+
+
+def _cache_path() -> Path:
+    cache_root = os.environ.get("XDG_CACHE_HOME")
+    if not cache_root:
+        home = os.environ.get("HOME")
+        cache_root = str(Path(home) / ".cache") if home else str(Path.home() / ".cache")
+    return Path(cache_root) / "agent-sync" / "mcp-deps.json"
+
+
+def _has_sensitive_cache_key(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if not isinstance(key, str) or _SENSITIVE_CACHE_KEY.search(key):
+                return True
+            if _has_sensitive_cache_key(nested):
+                return True
+    elif isinstance(value, list):
+        return any(_has_sensitive_cache_key(item) for item in value)
+    return False
+
+
+def _valid_cached_record(record: object) -> bool:
+    if not isinstance(record, dict) or set(record) != _CACHE_RECORD_KEYS:
+        return False
+    server = record["server"]
+    ecosystem = record["ecosystem"]
+    package = record["package"]
+    current = record["current"]
+    latest = record["latest"]
+    pin_state = record["pin_state"]
+    status = record["status"]
+    deprecated = record["deprecated"]
+    metadata_url = record["metadata_url"]
+    if not isinstance(server, str) or not _SAFE_SERVER_NAME.fullmatch(server):
+        return False
+    if ecosystem not in {"npm", "pypi"} or not isinstance(package, str):
+        return False
+    package_pattern = _NPM_PACKAGE if ecosystem == "npm" else _PYPI_PACKAGE
+    if not package_pattern.fullmatch(package):
+        return False
+    if current is not None and (
+        not isinstance(current, str) or not _NUMERIC_VERSION.fullmatch(current)
+    ):
+        return False
+    if latest is not None and (
+        not isinstance(latest, str) or not _NUMERIC_VERSION.fullmatch(latest)
+    ):
+        return False
+    if pin_state not in {"exact", "latest", "unversioned"}:
+        return False
+    if not isinstance(deprecated, bool):
+        return False
+    spec = DependencySpec(server, ecosystem, package, current, pin_state, 0)
+    if metadata_url != _registry_url(spec):
+        return False
+
+    if latest is None:
+        expected_status = "unknown"
+    elif deprecated:
+        expected_status = "deprecated"
+    elif pin_state in {"latest", "unversioned"}:
+        expected_status = "unpinned"
+    elif current is None:
+        expected_status = "unknown"
+    else:
+        comparison = _compare_versions(current, latest)
+        if comparison < 0:
+            expected_status = "update-available"
+        elif comparison > 0:
+            expected_status = "ahead"
+        else:
+            expected_status = "current"
+    return status == expected_status
+
+
+def _validate_cache(payload: object, now: float) -> dict[str, object] | None:
+    if _has_sensitive_cache_key(payload):
+        return None
+    if not isinstance(payload, dict) or set(payload) != _CACHE_KEYS:
+        return None
+    checked_at = payload["checked_at"]
+    dependencies = payload["dependencies"]
+    if (
+        isinstance(checked_at, bool)
+        or not isinstance(checked_at, (int, float))
+        or not math.isfinite(checked_at)
+        or checked_at > now
+        or now - checked_at > _CACHE_TTL
+        or not isinstance(dependencies, list)
+        or not all(_valid_cached_record(record) for record in dependencies)
+    ):
+        return None
+    return payload
+
+
+def _read_cache(now: float | None = None) -> dict[str, object] | None:
+    try:
+        payload = json.loads(_cache_path().read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return _validate_cache(payload, time.time() if now is None else now)
+
+
+def _write_cache(dependencies: list[dict[str, object]], checked_at: float) -> None:
+    cache_path = _cache_path()
+    payload = {"checked_at": checked_at, "dependencies": dependencies}
+    if _validate_cache(payload, checked_at) is None:
+        raise DependencyError("MCP dependency cache update failed")
+    descriptor = None
+    temporary_name = None
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{cache_path.name}.", dir=cache_path.parent
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary:
+            descriptor = None
+            os.fchmod(temporary.fileno(), 0o600)
+            json.dump(payload, temporary, sort_keys=True, separators=(",", ":"))
+            temporary.write("\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, cache_path)
+        temporary_name = None
+    except Exception:
+        raise DependencyError("MCP dependency cache update failed") from None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
 
 
 def _target_is_available(
@@ -1018,3 +1175,151 @@ def smoke_dependency(
     if result is None:
         raise DependencyError("MCP smoke probe failed")
     return result
+
+
+def _default_hub() -> Path:
+    configured = os.environ.get("AGENT_HUB_ROOT")
+    return Path(configured) if configured else Path.home() / ".config" / "agent-hub"
+
+
+def _dependency_requirement(spec: DependencySpec) -> str:
+    if spec.pin_state == "exact" and spec.version is not None:
+        separator = "==" if spec.ecosystem == "pypi" else "@"
+        return f"{spec.package}{separator}{spec.version}"
+    if spec.pin_state == "latest":
+        return f"{spec.package}@latest"
+    return spec.package
+
+
+def _require_clean_hub(hub: Path) -> None:
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(hub), "status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        raise DependencyError("Hub must be a clean git worktree before --apply") from None
+    if status.returncode != 0 or status.stdout:
+        raise DependencyError("Hub must be a clean git worktree before --apply")
+
+
+def _print_dependency_check(
+    dependencies: list[dict[str, object]], *, as_json: bool, quiet: bool
+) -> None:
+    if quiet:
+        for record in dependencies:
+            if record["status"] == "update-available":
+                print(
+                    "MCP dependency update available: "
+                    f"{record['server']}/{record['package']} "
+                    f"{record['current']} -> {record['latest']}",
+                    file=sys.stderr,
+                )
+        return
+    if as_json:
+        print(json.dumps({"dependencies": dependencies}, sort_keys=True))
+        return
+    for record in dependencies:
+        current = record["current"] or record["pin_state"]
+        latest = record["latest"] or "unknown"
+        print(
+            f"{record['server']}: {record['package']} "
+            f"{current} -> {latest} ({record['status']})"
+        )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="mcp-deps")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    check = commands.add_parser("check", help="check primary registries for updates")
+    check.add_argument("--json", action="store_true", dest="as_json")
+    check.add_argument("--refresh", action="store_true")
+    check.add_argument("--cached", action="store_true", help=argparse.SUPPRESS)
+    check.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
+    check.add_argument("--hub", type=Path, default=None, help=argparse.SUPPRESS)
+
+    pin = commands.add_parser("pin", help="propose or apply an exact dependency pin")
+    pin.add_argument("server")
+    pin.add_argument("version")
+    mode = pin.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    pin.add_argument("--hub", type=Path, default=None, help=argparse.SUPPRESS)
+
+    smoke = commands.add_parser("smoke", help="probe one configured MCP server")
+    smoke.add_argument("server")
+    smoke.add_argument("--target")
+    smoke.add_argument("--timeout", type=float, default=30)
+    smoke.add_argument("--hub", type=Path, default=None, help=argparse.SUPPRESS)
+    return parser
+
+
+def main(
+    argv: list[str] | None = None, *, fetch_json=default_fetch_json
+) -> int:
+    args = _build_parser().parse_args(argv)
+    hub = args.hub if args.hub is not None else _default_hub()
+    try:
+        if args.command == "check":
+            if args.cached and args.refresh:
+                raise DependencyError("--cached and --refresh cannot be combined")
+            cached = None if args.refresh else _read_cache()
+            if cached is None and args.cached:
+                return 0
+            if cached is None:
+                dependencies = check_dependencies(
+                    discover_dependencies(hub), fetch_json
+                )
+                checked_at = time.time()
+                _write_cache(dependencies, checked_at)
+            else:
+                dependencies = cached["dependencies"]
+            _print_dependency_check(
+                dependencies, as_json=args.as_json, quiet=args.quiet
+            )
+            return 0
+
+        if args.command == "pin":
+            if not _NUMERIC_VERSION.fullmatch(args.version):
+                raise DependencyError("invalid MCP dependency target version")
+            specs = discover_dependencies(hub)
+            spec = next((item for item in specs if item.server == args.server), None)
+            if spec is None:
+                raise DependencyError("unknown MCP dependency server")
+            if args.apply:
+                _require_clean_hub(hub)
+            old_requirement = _dependency_requirement(spec)
+            separator = "==" if spec.ecosystem == "pypi" else "@"
+            new_requirement = f"{spec.package}{separator}{args.version}"
+            pin_dependency(
+                hub,
+                args.server,
+                args.version,
+                apply=args.apply,
+                fetch_json=fetch_json,
+            )
+            print(f"{args.server}: {old_requirement} -> {new_requirement}")
+            return 0
+
+        result = smoke_dependency(
+            hub,
+            args.server,
+            target=args.target,
+            timeout=args.timeout,
+        )
+        print(f"{result['server']}: healthy ({result['tool_count']} tools)")
+        return 0
+    except DependencyError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    except Exception:
+        print("ERROR: MCP dependency command failed", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

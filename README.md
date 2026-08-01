@@ -196,6 +196,11 @@ agent-sync sources       # rank local MCP configurations without changing them
 agent-sync sync --from vscode --dry-run
 agent-sync sync --from vscode # VS Code → Hub → all tools
 agent-sync trace mcp NAME # show shared/retired/tool-only ownership and locations
+agent-sync deps check --json # cached primary-registry dependency report
+agent-sync deps check --refresh # bypass the 24-hour safe cache
+agent-sync deps pin SERVER VERSION --dry-run
+agent-sync deps pin SERVER VERSION --apply # requires a clean Hub worktree
+agent-sync deps smoke SERVER --timeout 30
 agent-sync all           # full Hub sync + structural and managed runtime gates
 agent-sync skills        # symlink whitelist skills
 agent-sync mcp           # merge shared MCP (keeps tool-only servers)
@@ -393,6 +398,27 @@ authoritative, and `agent-sync fix` never removes tool-only MCP servers.
 A locally launched CLI or MCP can still call a cloud service. Record execution
 location and data destination separately in the private Hub runbook instead of
 assuming that every local process is offline.
+
+### MCP dependency maintenance
+
+Use an Agent-reviewed sequence for Hub-managed `uvx` and `npx` dependencies:
+
+```bash
+agent-sync deps check --refresh
+# review the package's primary release notes and compatibility impact
+agent-sync deps pin SERVER VERSION --dry-run
+agent-sync deps pin SERVER VERSION --apply
+agent-sync deps smoke SERVER
+agent-sync test
+agent-sync sync
+```
+
+`deps check` caches only a fixed, secret-free dependency summary for 24 hours.
+`agent-sync all` reads that cache before syncing and only reports available
+candidates; it does not fetch while offline, pin a version, or make a
+compatibility decision. An active Agent reviews the primary release and chooses
+whether to apply a pin. No hidden secondary model call participates in this
+workflow.
 
 ### Auto-update (optional)
 

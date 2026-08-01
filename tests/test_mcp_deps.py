@@ -11,12 +11,15 @@ import textwrap
 import threading
 import time
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError, URLError
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "mcp-deps.py"
+REPO = Path(__file__).parents[1]
+ENTRYPOINT = REPO / "bin" / "agent-sync"
 SPEC = importlib.util.spec_from_file_location("mcp_deps", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("unable to load MCP dependency parser")
@@ -862,6 +865,295 @@ class McpDependencyTests(unittest.TestCase):
         self.assertFalse(http_body.read_called)
 
 
+class McpDependencyCliTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.home = root / "home"
+        self.hub = root / "hub"
+        self.home.mkdir()
+        (self.hub / "mcp").mkdir(parents=True)
+        (self.hub / "manifest.yaml").write_text("skills: []\n", encoding="utf-8")
+        self.shared_path = self.hub / "mcp" / "shared-servers.json"
+        self.shared_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "mineru": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.21"],
+                            "env": {"SAFE_VALUE": "PRIVATE-HUB-VALUE"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.cache_path = self.home / ".cache" / "agent-sync" / "mcp-deps.json"
+        self.fetch_calls = []
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def fetch_json(self, url):
+        self.fetch_calls.append(url)
+        return {
+            "info": {
+                "version": "1.0.22",
+                "api_token": "PRIVATE-REGISTRY-VALUE",
+            },
+            "releases": {"1.0.22": [{"yanked": False}]},
+        }
+
+    def safe_cached_update(self, checked_at=None):
+        return {
+            "checked_at": time.time() if checked_at is None else checked_at,
+            "dependencies": [
+                {
+                    "server": "mineru",
+                    "ecosystem": "pypi",
+                    "package": "mineru-open-mcp",
+                    "current": "1.0.21",
+                    "latest": "1.0.22",
+                    "pin_state": "exact",
+                    "status": "update-available",
+                    "deprecated": False,
+                    "metadata_url": "https://pypi.org/pypi/mineru-open-mcp/json",
+                }
+            ],
+        }
+
+    def write_cache(self, payload):
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self.cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def invoke_main(self, *args, fetch_json=None):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        environment = {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+        }
+        with mock.patch.dict(os.environ, environment, clear=False), redirect_stdout(
+            stdout
+        ), redirect_stderr(stderr):
+            rc = MCP_DEPS.main(
+                list(args),
+                fetch_json=self.fetch_json if fetch_json is None else fetch_json,
+            )
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def run_entrypoint(self, *args, cache_payload=None):
+        if cache_payload is not None:
+            self.write_cache(cache_payload)
+        environment = os.environ | {
+            "HOME": str(self.home),
+            "AGENT_HUB_ROOT": str(self.hub),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        }
+        return subprocess.run(
+            [str(ENTRYPOINT), *args],
+            cwd=REPO,
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
+
+    def initialize_clean_hub(self):
+        subprocess.run(["git", "init", "-q", str(self.hub)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.hub), "config", "user.name", "Test User"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.hub),
+                "config",
+                "user.email",
+                "test@example.invalid",
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.hub), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.hub), "commit", "-q", "-m", "initial"],
+            check=True,
+        )
+
+    def test_check_json_fetches_and_caches_only_safe_dependency_records(self):
+        rc, stdout, stderr = self.invoke_main("check", "--json")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("dependencies", json.loads(stdout))
+        self.assertEqual(len(self.fetch_calls), 1)
+        cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        self.assertEqual(set(cache), {"checked_at", "dependencies"})
+        self.assertEqual(cache["dependencies"], json.loads(stdout)["dependencies"])
+        serialized = stdout + stderr + json.dumps(cache)
+        self.assertNotIn("PRIVATE-HUB-VALUE", serialized)
+        self.assertNotIn("PRIVATE-REGISTRY-VALUE", serialized)
+
+    def test_check_reuses_fresh_cache_and_refresh_forces_registry_fetch(self):
+        first = self.invoke_main("check", "--json")
+        second = self.invoke_main("check", "--json")
+        refreshed = self.invoke_main("check", "--json", "--refresh")
+
+        self.assertEqual([first[0], second[0], refreshed[0]], [0, 0, 0])
+        self.assertEqual(len(self.fetch_calls), 2)
+        self.assertEqual(
+            json.loads(first[1])["dependencies"],
+            json.loads(second[1])["dependencies"],
+        )
+
+    def test_check_rejects_stale_malformed_unknown_and_sensitive_cache_fields(self):
+        unsafe_payloads = [
+            self.safe_cached_update(time.time() - 86401),
+            {"checked_at": "recent", "dependencies": []},
+            self.safe_cached_update() | {"unexpected": "PRIVATE-CACHE-VALUE"},
+        ]
+        for term in ("token", "secret", "password", "header", "oauth", "vault", "path"):
+            unsafe_payloads.append(
+                self.safe_cached_update()
+                | {f"unsafe_{term}_field": "PRIVATE-CACHE-VALUE"}
+            )
+
+        for payload in unsafe_payloads:
+            with self.subTest(keys=sorted(payload)):
+                self.write_cache(payload)
+                calls_before = len(self.fetch_calls)
+
+                rc, stdout, stderr = self.invoke_main("check", "--json")
+
+                self.assertEqual(rc, 0, stderr)
+                self.assertEqual(len(self.fetch_calls), calls_before + 1)
+                self.assertIn("dependencies", json.loads(stdout))
+                self.assertNotIn("PRIVATE-CACHE-VALUE", stdout + stderr)
+
+    def test_cached_quiet_advises_from_safe_cache_without_fetching(self):
+        self.write_cache(self.safe_cached_update())
+
+        rc, stdout, stderr = self.invoke_main(
+            "check",
+            "--cached",
+            "--quiet",
+            fetch_json=lambda _url: self.fail("cached check must not fetch"),
+        )
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            stderr,
+            "MCP dependency update available: mineru/mineru-open-mcp 1.0.21 -> 1.0.22\n",
+        )
+
+    def test_cached_quiet_ignores_invalid_cache_without_leaking_or_fetching(self):
+        self.write_cache(
+            self.safe_cached_update()
+            | {"access_token": "PRIVATE-CACHE-VALUE"}
+        )
+
+        rc, stdout, stderr = self.invoke_main(
+            "check",
+            "--cached",
+            "--quiet",
+            fetch_json=lambda _url: self.fail("cached check must not fetch"),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout + stderr, "")
+
+    def test_cache_update_is_atomic_and_sanitizes_replace_failures(self):
+        secret = "PRIVATE-REPLACE-FAILURE"
+        with mock.patch.object(MCP_DEPS.os, "replace", side_effect=OSError(secret)):
+            rc, stdout, stderr = self.invoke_main("check", "--json")
+
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(stdout, "")
+        self.assertNotIn(secret, stderr)
+        self.assertFalse(self.cache_path.exists())
+        self.assertEqual(list(self.cache_path.parent.glob(".mcp-deps.json.*")), [])
+
+    def test_pin_dry_run_allows_dirty_hub_and_prints_only_requirement_change(self):
+        self.initialize_clean_hub()
+        (self.hub / "dirty-marker").write_text("dirty\n", encoding="utf-8")
+        before = self.shared_path.read_bytes()
+
+        rc, stdout, stderr = self.invoke_main(
+            "pin", "mineru", "1.0.22", "--dry-run"
+        )
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(
+            stdout,
+            "mineru: mineru-open-mcp==1.0.21 -> mineru-open-mcp==1.0.22\n",
+        )
+        self.assertNotIn("PRIVATE-HUB-VALUE", stdout + stderr)
+        self.assertNotIn("mcpServers", stdout + stderr)
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_pin_apply_refuses_dirty_hub_before_registry_or_mutation(self):
+        self.initialize_clean_hub()
+        (self.hub / "dirty-marker").write_text("dirty\n", encoding="utf-8")
+        before = self.shared_path.read_bytes()
+
+        rc, stdout, stderr = self.invoke_main(
+            "pin",
+            "mineru",
+            "1.0.22",
+            "--apply",
+            fetch_json=lambda _url: self.fail("dirty apply must not fetch"),
+        )
+
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("clean git worktree", stderr)
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+    def test_pin_apply_changes_a_clean_hub_and_keeps_output_secret_free(self):
+        self.initialize_clean_hub()
+
+        rc, stdout, stderr = self.invoke_main("pin", "mineru", "1.0.22", "--apply")
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(
+            stdout,
+            "mineru: mineru-open-mcp==1.0.21 -> mineru-open-mcp==1.0.22\n",
+        )
+        self.assertNotIn("PRIVATE-HUB-VALUE", stdout + stderr)
+        self.assertIn("mineru-open-mcp==1.0.22", self.shared_path.read_text())
+
+    def test_shell_dispatches_deps_without_exposing_registry_injection(self):
+        checked = self.run_entrypoint(
+            "deps", "check", "--json", cache_payload=self.safe_cached_update()
+        )
+        bad_pin = self.run_entrypoint("deps", "pin", "mineru", "latest", "--apply")
+
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn("dependencies", json.loads(checked.stdout))
+        self.assertNotEqual(bad_pin.returncode, 0)
+
+    def test_only_all_prints_cached_dependency_advisory_without_mutating_hub(self):
+        self.shared_path.write_text('{"mcpServers": {}}', encoding="utf-8")
+        before = self.shared_path.read_bytes()
+
+        sync = self.run_entrypoint(
+            "sync", cache_payload=self.safe_cached_update()
+        )
+        all_run = self.run_entrypoint(
+            "all", cache_payload=self.safe_cached_update()
+        )
+
+        self.assertEqual(sync.returncode, 0, sync.stdout + sync.stderr)
+        self.assertNotIn(
+            "MCP dependency update available", sync.stdout + sync.stderr
+        )
+        self.assertEqual(all_run.returncode, 0, all_run.stdout + all_run.stderr)
+        self.assertIn("MCP dependency update available", all_run.stderr)
+        self.assertEqual(self.shared_path.read_bytes(), before)
+
+
 class RecordedInput(io.BytesIO):
     def __init__(self, events, close_failures=0):
         super().__init__()
@@ -1293,6 +1585,36 @@ class McpSmokeDependencyTests(unittest.TestCase):
                 "status": "healthy",
             },
         )
+
+    def test_cli_smoke_reports_only_the_safe_health_summary(self):
+        self.write_config(self.fake_config())
+        environment = {
+            "FAKE_COMMAND": sys.executable,
+            "FAKE_SCRIPT": str(self.fake_child),
+            "RECORD_FILE": str(self.record_path),
+            "ARG_VALUE": "resolved-argument",
+            "ENV_VALUE": "resolved-environment",
+        }
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with mock.patch.dict(os.environ, environment, clear=False), redirect_stdout(
+            stdout
+        ), redirect_stderr(stderr):
+            rc = MCP_DEPS.main(
+                [
+                    "smoke",
+                    "mineru",
+                    "--hub",
+                    str(self.hub),
+                    "--timeout",
+                    "2",
+                ]
+            )
+
+        self.assertEqual(rc, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "mineru: healthy (2 tools)\n")
+        self.assertNotIn("private description", stdout.getvalue() + stderr.getvalue())
         record = json.loads(self.record_path.read_text(encoding="utf-8"))
         self.assertEqual(
             [message["method"] for message in record["messages"]],
