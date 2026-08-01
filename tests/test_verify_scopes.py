@@ -72,6 +72,34 @@ class VerifyScopeTests(unittest.TestCase):
             capture_output=True,
         )
 
+    def exclude_shared_from_targets(self, *managed_targets: str) -> None:
+        targets = {
+            "codex",
+            "claude",
+            "cursor",
+            "gemini",
+            "gemini-global",
+            "antigravity-app",
+            "antigravity-cli",
+            "antigravity-ide",
+            "opencode",
+            "vscode",
+            "vscode:paper",
+        }
+        policy = self.hub / "policies" / "tool-scopes.json"
+        policy.parent.mkdir(exist_ok=True)
+        policy.write_text(
+            json.dumps(
+                {
+                    "distribution": {
+                        target: {"exclude_mcp": ["shared"]}
+                        for target in sorted(targets - set(managed_targets))
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def test_managed_scope_ignores_tool_only_failure(self):
         result = self.run_entrypoint(
             "verify",
@@ -124,6 +152,106 @@ class VerifyScopeTests(unittest.TestCase):
         )
         result = self.run_doctor("--strict", "--scope", "managed")
         self.assertEqual(result.returncode, 1)
+
+    def test_managed_scope_ignores_excluded_profile_same_name_executable(self):
+        (self.hub / "mcp" / "shared-servers.json").write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "/bin/sh"}}}
+            ),
+            encoding="utf-8",
+        )
+        profile = (
+            self.home
+            / "Library"
+            / "Application Support"
+            / "Code"
+            / "User"
+            / "profiles"
+            / "paper"
+        )
+        profile.mkdir(parents=True)
+        (profile / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "servers": {
+                        "shared": {
+                            "command": "definitely-missing-profile-command"
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.exclude_shared_from_targets()
+
+        result = self.run_entrypoint(
+            "doctor",
+            "--json",
+            "--strict",
+            "--scope",
+            "managed",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        finding = next(
+            item
+            for item in json.loads(result.stdout)["findings"]
+            if "VS Code profile paper/shared" in item["message"]
+        )
+        self.assertEqual(finding["scope"], "local")
+        self.assertEqual(finding["owner"], "vscode:paper")
+
+    def test_managed_scope_ignores_plugin_owned_same_name_executable(self):
+        (self.hub / "mcp" / "shared-servers.json").write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "/bin/sh"}}}
+            ),
+            encoding="utf-8",
+        )
+        cursor = self.home / ".cursor"
+        cursor.mkdir()
+        (cursor / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared": {
+                            "command": "definitely-missing-cursor-command"
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin = cursor / "plugins" / "local" / "owner"
+        plugin.mkdir(parents=True)
+        (plugin / "mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "/bin/sh"}}}
+            ),
+            encoding="utf-8",
+        )
+        self.exclude_shared_from_targets("cursor")
+
+        result = self.run_entrypoint(
+            "doctor",
+            "--json",
+            "--strict",
+            "--scope",
+            "managed",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        finding = next(
+            item
+            for item in report["findings"]
+            if "Cursor/shared" in item["message"]
+        )
+        self.assertEqual(finding["scope"], "local")
+        self.assertEqual(finding["owner"], "cursor")
+        self.assertFalse(
+            any("MCP name collision" in item["message"] for item in report["findings"])
+        )
 
     def test_managed_scope_fails_retired_mcp_residue(self):
         (self.hub / "mcp" / "retired-servers.json").write_text(

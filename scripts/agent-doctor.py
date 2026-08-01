@@ -204,8 +204,8 @@ def mcp_usability_findings() -> list[dict[str, str]]:
 def configured_mcp_findings() -> list[dict[str, str]]:
     """Audit every configured MCP, including tool-only and retired entries."""
     findings: list[dict[str, str]] = []
-    shared = {name.casefold() for name in read_shared_mcp()}
     for record in collect_inventory(HOME, HUB):
+        coverage = resolve_mcp_coverage(record["tool"], HOME, HUB)
         if record["parse_error"]:
             findings.append(
                 make_finding(
@@ -214,11 +214,25 @@ def configured_mcp_findings() -> list[dict[str, str]]:
                     owner=record["tool"],
                 )
             )
+        for name, ownership in coverage.items():
+            if ownership.get("collision") != "plugin-transport":
+                continue
+            findings.append(
+                make_finding(
+                    (
+                        f"MCP name collision in {record['label']}: {name} "
+                        "is provided by an active plugin with a different "
+                        "transport."
+                    ),
+                    scope="local",
+                    owner=record["tool"],
+                )
+            )
         for name in record["missing_commands"]:
-            scope, owner = (
-                ("managed", "hub")
-                if name.casefold() in shared
-                else ("local", record["tool"])
+            scope, owner = classify_runtime_failure(
+                record["tool"],
+                name,
+                coverage,
             )
             findings.append(
                 make_finding(

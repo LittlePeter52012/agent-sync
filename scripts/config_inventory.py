@@ -322,6 +322,9 @@ def resolve_mcp_coverage(
             else "drifted"
         )
         coverage[name] = {"state": state, "owner": "hub-managed"}
+    for name, record in coverage.items():
+        if name.casefold() in resolution.mcp_collisions:
+            record["collision"] = "plugin-transport"
     return coverage
 
 

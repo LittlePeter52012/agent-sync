@@ -270,6 +270,10 @@ class CapabilityResolverTests(unittest.TestCase):
             resolution.mcp_owners["shared-mcp"],
             "plugin:cloudflare",
         )
+        self.assertEqual(
+            resolution.mcp_collisions,
+            frozenset(),
+        )
         self.assertNotIn("cloudflare-local", resolution.suppressed_mcp)
 
     def test_same_name_different_transport_is_not_automatic_plugin_ownership(self):
@@ -293,6 +297,59 @@ class CapabilityResolverTests(unittest.TestCase):
 
         self.assertNotIn("shared-mcp", resolution.suppressed_mcp)
         self.assertNotIn("shared-mcp", resolution.mcp_owners)
+        self.assertEqual(
+            resolution.mcp_collisions,
+            frozenset({"shared-mcp"}),
+        )
+
+    def test_explicit_marketplace_preference_resolves_same_name_collision(self):
+        plugin = self.home / ".cursor/plugins/local/conflict"
+        plugin.mkdir(parents=True)
+        (plugin / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "shared-mcp": {
+                            "type": "http",
+                            "url": "https://different.example/mcp",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "cursor": {
+                            "prefer_marketplace": {
+                                "conflict": {
+                                    "skills": [],
+                                    "mcp": ["shared-mcp"],
+                                }
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(
+            resolution.suppressed_mcp,
+            frozenset({"shared-mcp"}),
+        )
+        self.assertEqual(
+            resolution.mcp_owners["shared-mcp"],
+            "plugin:conflict",
+        )
+        self.assertEqual(
+            resolution.mcp_collisions,
+            frozenset(),
+        )
 
     def test_plugin_disappearance_restores_conditional_capability(self):
         self.cursor_plugin("cloudflare", "abc", skill="cloudflare")

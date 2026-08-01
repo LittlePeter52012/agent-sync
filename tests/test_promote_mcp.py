@@ -104,7 +104,10 @@ class PromoteMcpTests(unittest.TestCase):
         )
 
     def run_agent_sync(
-        self, *args: str, hub: Optional[Path] = None
+        self,
+        *args: str,
+        hub: Optional[Path] = None,
+        extra_env: Optional[dict[str, str]] = None,
     ) -> subprocess.CompletedProcess[str]:
         selected_hub = hub or self.hub
         fake_claude = Path(self.tempdir.name) / "cli-claude"
@@ -153,6 +156,8 @@ class PromoteMcpTests(unittest.TestCase):
             "CLAUDE_BIN": str(fake_claude),
             "TOKEN": "local-test-token",
         }
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             [str(ENTRYPOINT), *args],
             cwd=REPO,
@@ -597,6 +602,69 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertNotIn("old-shared", servers)
         self.assertIn("tool-only", servers)
         self.assertIn("shared", servers)
+
+    def test_post_sync_doctor_reports_plugin_transport_name_collision(self):
+        self.canonical.write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "/bin/sh"}}},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.write_cursor_plugin(
+            {
+                "shared": {
+                    "type": "http",
+                    "url": (
+                        "https://plugin.example/mcp?token="
+                        "SECRET_MUST_NOT_LEAK"
+                    ),
+                }
+            }
+        )
+        isolated_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+        synced = self.run_agent_sync(
+            "mcp",
+            extra_env={"PATH": isolated_path},
+        )
+
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        cursor = json.loads(
+            (self.home / ".cursor" / "mcp.json").read_text(encoding="utf-8")
+        )["mcpServers"]
+        self.assertEqual(cursor["shared"]["command"], "/bin/sh")
+
+        doctor = self.run_agent_sync(
+            "doctor",
+            "--json",
+            extra_env={"PATH": isolated_path},
+        )
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        collisions = [
+            finding
+            for finding in json.loads(doctor.stdout)["findings"]
+            if "MCP name collision" in finding["message"]
+        ]
+        self.assertEqual(
+            collisions,
+            [
+                {
+                    "severity": "attention",
+                    "message": (
+                        "MCP name collision in Cursor: shared is provided by "
+                        "an active plugin with a different transport."
+                    ),
+                    "scope": "local",
+                    "owner": "cursor",
+                }
+            ],
+        )
+        self.assertNotIn(
+            "SECRET_MUST_NOT_LEAK",
+            doctor.stdout + doctor.stderr,
+        )
 
     def test_sync_from_runs_promotion_then_full_distribution(self):
         self.write_vscode_profile(

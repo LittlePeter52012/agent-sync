@@ -144,11 +144,13 @@ directories. Shared rules still use the single global
 Product plugins remain owned by their product manager. For Cursor, Agent Sync
 uses the active plugin log plus the declared cache revision, or an explicit
 local-plugin directory; a cache directory by itself is not treated as enabled.
-When an active plugin exposes the same Skill, MCP name, or normalized MCP
+When an active plugin exposes the same Skill or the same normalized MCP
 transport as the Hub, Agent Sync counts it as `plugin-owned` and removes only
-the duplicate Hub-managed link or entry. Plugin files and unrelated local
-capabilities are never modified. If the plugin disappears, the next sync
-restores the Hub capability automatically.
+the duplicate Hub-managed link or entry. The same MCP name with a different
+transport keeps the Hub entry and is reported by Doctor as a local collision;
+an explicit `prefer_marketplace` policy can instead choose the plugin. Plugin
+files and unrelated local capabilities are never modified. If the plugin
+disappears, the next sync restores the Hub capability automatically.
 
 Target-specific `distribution.exclude_skills` and `exclude_mcp` policy entries
 provide explicit exclusions. Conditional `plugins.<target>.prefer_marketplace`

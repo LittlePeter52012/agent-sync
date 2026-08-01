@@ -42,6 +42,7 @@ class TargetResolution:
     suppressed_mcp: frozenset[str]
     skill_owners: Mapping[str, str]
     mcp_owners: Mapping[str, str]
+    mcp_collisions: frozenset[str]
     active_plugins: tuple[PluginSource, ...]
     uncertain: tuple[str, ...] = ()
 
@@ -296,6 +297,7 @@ def resolve_target_policy(
     suppressed_mcp: set[str] = set()
     skill_owners: dict[str, str] = {}
     mcp_owners: dict[str, str] = {}
+    mcp_collisions: set[str] = set()
 
     shared_identities = {
         name.casefold(): normalize_mcp_identity(config)
@@ -309,6 +311,11 @@ def resolve_target_policy(
     }
     for source in sources:
         owner = f"plugin:{source.plugin_id.split('@', 1)[0]}"
+        plugin_names = {
+            name.casefold()
+            for name in source.mcp_servers
+            if isinstance(name, str)
+        }
         for skill in source.skills:
             if skill in skills:
                 suppressed_skills.add(skill)
@@ -324,6 +331,8 @@ def resolve_target_policy(
             if transport_match:
                 suppressed_mcp.add(name)
                 mcp_owners[name] = owner
+            elif name in plugin_names:
+                mcp_collisions.add(name)
 
     plugins_policy = policy.get("plugins", {})
     target_plugins = (
@@ -375,11 +384,13 @@ def resolve_target_policy(
                 suppressed_mcp.add(canonical)
                 mcp_owners[canonical] = "excluded"
 
+    mcp_collisions.difference_update(suppressed_mcp)
     return TargetResolution(
         suppressed_skills=frozenset(suppressed_skills),
         suppressed_mcp=frozenset(suppressed_mcp),
         skill_owners=skill_owners,
         mcp_owners=mcp_owners,
+        mcp_collisions=frozenset(mcp_collisions),
         active_plugins=tuple(sources),
     )
 
