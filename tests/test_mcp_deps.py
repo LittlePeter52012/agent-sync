@@ -6,6 +6,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -856,6 +858,359 @@ class McpDependencyTests(unittest.TestCase):
 
         self.assertTrue(http_body.closed)
         self.assertFalse(http_body.read_called)
+
+
+class McpSmokeDependencyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.hub = Path(self.temp_dir.name)
+        self.shared_path = self.hub / "mcp" / "shared-servers.json"
+        self.record_path = self.hub / "fake-child-record.json"
+        self.fake_child = self.hub / "fake-mcp-child.py"
+        self.fake_child.write_text(
+            textwrap.dedent(
+                """
+                import json
+                import os
+                import signal
+                import sys
+                import time
+                from pathlib import Path
+
+                record_path = Path(sys.argv[1])
+                scenario = sys.argv[2]
+                extra_arg = sys.argv[3] if len(sys.argv) > 3 else None
+                messages = []
+
+                def receive():
+                    line = sys.stdin.readline()
+                    if not line:
+                        return None
+                    message = json.loads(line)
+                    messages.append(message)
+                    return message
+
+                def send(message):
+                    sys.stdout.write(json.dumps(message) + "\\n")
+                    sys.stdout.flush()
+
+                initialize = receive()
+                if scenario == "timeout":
+                    time.sleep(5)
+                if scenario == "malformed":
+                    sys.stdout.write("not-json PRIVATE-RAW-OUTPUT\\n")
+                    sys.stdout.flush()
+                    time.sleep(5)
+                if scenario == "stdout-cap":
+                    sys.stdout.write("PRIVATE-RAW-OUTPUT" * 20000 + "\\n")
+                    sys.stdout.flush()
+                    time.sleep(5)
+                if scenario == "stderr-cap":
+                    sys.stderr.write("PRIVATE-RAW-OUTPUT" * 20000)
+                    sys.stderr.flush()
+                    time.sleep(5)
+                if scenario == "notification":
+                    send({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {"progress": 1},
+                    })
+                response_id = 999 if scenario == "wrong-id" else initialize["id"]
+                if scenario == "rpc-error":
+                    send({
+                        "jsonrpc": "2.0",
+                        "id": response_id,
+                        "error": {"code": -32000, "message": "PRIVATE-RAW-OUTPUT"},
+                    })
+                    time.sleep(5)
+                protocol = "2024-11-05" if scenario == "protocol-mismatch" else "2025-06-18"
+                send({
+                    "jsonrpc": "2.0",
+                    "id": response_id,
+                    "result": {"protocolVersion": protocol, "capabilities": {}},
+                })
+                initialized = receive()
+                tools_request = receive()
+                if scenario == "non-list-tools":
+                    tools = {"name": "extract"}
+                elif scenario == "invalid-tool":
+                    tools = [{"name": ""}]
+                elif scenario == "unsafe-tool":
+                    tools = [{"name": "extract\\nPRIVATE-RAW-OUTPUT"}]
+                else:
+                    tools = [
+                        {"name": "status", "description": "private description"},
+                        {"name": "extract"},
+                        {"name": "status"},
+                    ]
+                send({
+                    "jsonrpc": "2.0",
+                    "id": tools_request["id"],
+                    "result": {"tools": tools},
+                })
+                if scenario == "late-stderr-cap":
+                    sys.stderr.write("PRIVATE-RAW-OUTPUT" * 20000)
+                    sys.stderr.flush()
+                record_path.write_text(json.dumps({
+                    "messages": messages,
+                    "extra_arg": extra_arg,
+                    "fake_env": os.environ.get("FAKE_ENV"),
+                }))
+                if scenario == "nonzero":
+                    raise SystemExit(7)
+                if scenario == "hang-after-tools":
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    while True:
+                        time.sleep(1)
+                """
+            ),
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def write_config(self, config):
+        self.shared_path.parent.mkdir(exist_ok=True)
+        self.shared_path.write_text(
+            json.dumps({"mcpServers": {"mineru": config}}), encoding="utf-8"
+        )
+
+    def fake_config(self, scenario="healthy"):
+        return {
+            "type": "stdio",
+            "command": "${FAKE_COMMAND}",
+            "args": ["${FAKE_SCRIPT}", "${RECORD_FILE}", scenario, "${ARG_VALUE}"],
+            "env": {"FAKE_ENV": "${ENV_VALUE}"},
+        }
+
+    def smoke(self, scenario="healthy", **kwargs):
+        self.write_config(self.fake_config(scenario))
+        environment = {
+            "FAKE_COMMAND": sys.executable,
+            "FAKE_SCRIPT": str(self.fake_child),
+            "RECORD_FILE": str(self.record_path),
+            "ARG_VALUE": "resolved-argument",
+            "ENV_VALUE": "resolved-environment",
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            return MCP_DEPS.smoke_dependency(
+                self.hub, "mineru", timeout=kwargs.pop("timeout", 2), **kwargs
+            )
+
+    def test_performs_initialize_notification_and_tool_list_handshake(self):
+        result = self.smoke()
+
+        self.assertEqual(
+            result,
+            {
+                "server": "mineru",
+                "initialized": True,
+                "protocol_version": "2025-06-18",
+                "tool_count": 2,
+                "tools": ["extract", "status"],
+                "status": "healthy",
+            },
+        )
+        record = json.loads(self.record_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [message["method"] for message in record["messages"]],
+            ["initialize", "notifications/initialized", "tools/list"],
+        )
+        self.assertEqual(record["extra_arg"], "resolved-argument")
+        self.assertEqual(record["fake_env"], "resolved-environment")
+        self.assertEqual(
+            record["messages"][0]["params"]["clientInfo"],
+            {
+                "name": "agent-sync",
+                "version": (Path(__file__).parents[1] / "VERSION")
+                .read_text(encoding="utf-8")
+                .strip(),
+            },
+        )
+
+    def test_ignores_valid_server_notifications_before_a_response(self):
+        result = self.smoke("notification")
+
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual(result["tools"], ["extract", "status"])
+
+    def test_rejects_protocol_and_response_failures_without_raw_output(self):
+        scenarios = (
+            "timeout",
+            "malformed",
+            "wrong-id",
+            "rpc-error",
+            "protocol-mismatch",
+            "non-list-tools",
+            "invalid-tool",
+            "unsafe-tool",
+            "nonzero",
+            "stdout-cap",
+            "stderr-cap",
+            "late-stderr-cap",
+        )
+
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                with self.assertRaises(DependencyError) as raised:
+                    self.smoke(scenario, timeout=0.3)
+
+                self.assertNotIn("PRIVATE-RAW-OUTPUT", str(raised.exception))
+
+    def test_rejects_non_stdio_and_unsafe_server_names_before_launch(self):
+        launches = []
+
+        def runner(*_args, **_kwargs):
+            launches.append(True)
+            raise AssertionError("runner must not be called")
+
+        invalid = (
+            ("mineru", {"type": "http", "url": "https://example.test/mcp"}),
+            ("mineru", {"url": "https://example.test/mcp"}),
+            ("../mineru", {"command": sys.executable, "args": []}),
+        )
+
+        for server, config in invalid:
+            with self.subTest(server=server, config=config):
+                self.write_config(config)
+                with self.assertRaises(DependencyError):
+                    MCP_DEPS.smoke_dependency(
+                        self.hub, server, timeout=0.1, runner=runner
+                    )
+
+        self.assertEqual(launches, [])
+
+    def test_rejects_unresolved_command_arg_and_env_before_launch(self):
+        launches = []
+
+        def runner(*_args, **_kwargs):
+            launches.append(True)
+            raise AssertionError("runner must not be called")
+
+        fixtures = (
+            {"command": "${MISSING_COMMAND}", "args": []},
+            {"command": sys.executable, "args": ["${MISSING_ARG}"]},
+            {
+                "command": sys.executable,
+                "args": [],
+                "env": {"TOKEN": "${MISSING_ENV}"},
+            },
+        )
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            for config in fixtures:
+                with self.subTest(config=config):
+                    self.write_config(config)
+                    with self.assertRaises(DependencyError):
+                        MCP_DEPS.smoke_dependency(
+                            self.hub, "mineru", timeout=0.1, runner=runner
+                        )
+
+        self.assertEqual(launches, [])
+
+    def test_rejects_nonfinite_timeouts_before_launch(self):
+        launches = []
+
+        def runner(*_args, **_kwargs):
+            launches.append(True)
+            raise AssertionError("runner must not be called")
+
+        self.write_config({"command": sys.executable, "args": []})
+
+        for timeout in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=timeout):
+                with self.assertRaises(DependencyError):
+                    MCP_DEPS.smoke_dependency(
+                        self.hub, "mineru", timeout=timeout, runner=runner
+                    )
+
+        self.assertEqual(launches, [])
+
+    def test_does_not_disclose_environment_or_resolved_values(self):
+        secret = "probe-secret-70f2c140"
+        config = {
+            "command": "${FAKE_COMMAND}",
+            "args": ["${FAKE_SCRIPT}", "${RECORD_FILE}", "malformed", secret],
+            "env": {"FAKE_ENV": secret},
+        }
+        self.write_config(config)
+        environment = {
+            "FAKE_COMMAND": sys.executable,
+            "FAKE_SCRIPT": str(self.fake_child),
+            "RECORD_FILE": str(self.record_path),
+            "UNRELATED_PRIVATE_VALUE": secret,
+        }
+
+        with mock.patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(DependencyError) as raised:
+                MCP_DEPS.smoke_dependency(self.hub, "mineru", timeout=0.3)
+
+        message = str(raised.exception)
+        self.assertNotIn(secret, message)
+        self.assertNotIn("UNRELATED_PRIVATE_VALUE", message)
+
+    def test_uses_allowed_target_donor_placeholders_without_disclosure(self):
+        self.write_config(
+            {
+                "command": sys.executable,
+                "args": [str(self.fake_child), str(self.record_path), "healthy", "${DONOR_ARG}"],
+                "env": {"FAKE_ENV": "${DONOR_ENV}"},
+            }
+        )
+        policy_path = self.hub / "policies" / "tool-scopes.json"
+        policy_path.parent.mkdir(exist_ok=True)
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "secrets": {
+                        "targets": {"codex": {"allow_secret_donors": True}}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        helpers = mock.Mock()
+        helpers.secret_donors_allowed.return_value = True
+        helpers.collect_donors.return_value = {
+            "mineru": {
+                "env": {"DONOR_ENV": "donor-environment", "DONOR_ARG": "donor-argument"}
+            }
+        }
+        helpers.donor_lookup_map.return_value = {
+            "DONOR_ENV": "donor-environment",
+            "DONOR_ARG": "donor-argument",
+        }
+        helpers.resolve_value.side_effect = lambda value, mapping: (
+            mapping.get(value[2:-1])
+            if isinstance(value, str) and value.startswith("${") and value.endswith("}")
+            else value
+        )
+        helpers.is_placeholder.side_effect = lambda value: (
+            isinstance(value, str)
+            and value.startswith("${")
+            and value.endswith("}")
+        )
+
+        with mock.patch.object(MCP_DEPS, "_load_merge_mcp", return_value=helpers):
+            result = MCP_DEPS.smoke_dependency(
+                self.hub, "mineru", target="codex", timeout=2
+            )
+
+        self.assertEqual(result["status"], "healthy")
+        record = json.loads(self.record_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["extra_arg"], "donor-argument")
+        self.assertEqual(record["fake_env"], "donor-environment")
+        helpers.collect_donors.assert_called_once_with()
+        helpers.donor_lookup_map.assert_called_once()
+
+    def test_bounds_graceful_shutdown_then_terminates_and_kills_process_group(self):
+        started = time.monotonic()
+
+        result = self.smoke("hang-after-tools", timeout=0.3)
+
+        self.assertEqual(result["status"], "healthy")
+        self.assertLess(time.monotonic() - started, 2)
 
 
 class FakeResponse(io.BytesIO):
