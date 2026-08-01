@@ -332,9 +332,28 @@ def _open_cache_dir(*, create: bool) -> int | None:
         not hasattr(os, name) for name in required_flags
     ):
         return _cache_failure(create)
+    created = False
     if create:
         try:
-            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cache_root = cache_dir.parent
+            cache_root_created = False
+            try:
+                cache_root.mkdir(parents=True, mode=0o700)
+                cache_root_created = True
+            except FileExistsError:
+                pass
+            if cache_root_created:
+                os.chmod(cache_root, 0o700, follow_symlinks=False)
+            try:
+                cache_dir.mkdir(mode=0o700)
+                created = True
+            except FileExistsError:
+                pass
+            if created:
+                # A restrictive umask can remove traversal permission. Only
+                # bootstrap the directory created above; the opened descriptor
+                # is normalized and validated below.
+                os.chmod(cache_dir, 0o700, follow_symlinks=False)
         except OSError:
             return _cache_failure(create)
 
@@ -344,6 +363,8 @@ def _open_cache_dir(*, create: bool) -> int | None:
             cache_dir,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
         )
+        if created:
+            os.fchmod(descriptor, 0o700)
         metadata = os.fstat(descriptor)
         directory_mode = stat.S_IMODE(metadata.st_mode)
         if (
@@ -492,20 +513,13 @@ def _validate_cache(payload: object, now: float) -> dict[str, object] | None:
     ):
         return None
     servers = set()
-    package_versions = set()
     for record in dependencies:
         if not _valid_cached_record(record):
             return None
         server = record["server"]
-        package_version = (
-            record["ecosystem"],
-            record["package"],
-            record["latest"],
-        )
-        if server in servers or package_version in package_versions:
+        if server in servers:
             return None
         servers.add(server)
-        package_versions.add(package_version)
     return payload
 
 
@@ -621,6 +635,7 @@ def _write_cache(dependencies: list[dict[str, object]], checked_at: float) -> No
                 continue
         if file_descriptor is None or temporary_name is None:
             raise OSError
+        os.fchmod(file_descriptor, 0o600)
         metadata = os.fstat(file_descriptor)
         if (
             not stat.S_ISREG(metadata.st_mode)
@@ -1435,7 +1450,11 @@ def _print_dependency_check(
     if quiet:
         advised = set()
         for record in dependencies:
-            package_version = (record["package"], record["latest"])
+            package_version = (
+                record["ecosystem"],
+                record["package"],
+                record["latest"],
+            )
             if (
                 record["status"] == "update-available"
                 and package_version not in advised

@@ -1147,19 +1147,64 @@ class McpDependencyCliTests(unittest.TestCase):
             with self.subTest(record=payload["dependencies"][0]):
                 self.assert_cache_miss_refreshes(payload)
 
-    def test_cache_rejects_duplicate_servers_and_package_version_pairs(self):
+    def test_cache_rejects_duplicate_servers(self):
         duplicate_server = self.safe_cached_update()
         duplicate_server["dependencies"].append(
             dict(duplicate_server["dependencies"][0])
         )
-        duplicate_pair = self.safe_cached_update()
-        second = dict(duplicate_pair["dependencies"][0])
-        second["server"] = "mineru-copy"
-        duplicate_pair["dependencies"].append(second)
 
-        for payload in (duplicate_server, duplicate_pair):
-            with self.subTest(servers=[item["server"] for item in payload["dependencies"]]):
-                self.assert_cache_miss_refreshes(payload)
+        self.assert_cache_miss_refreshes(duplicate_server)
+
+    def test_shared_package_servers_refresh_cache_reuse_and_quiet_once(self):
+        self.shared_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "profile-a": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.21", "--mode", "a"],
+                        },
+                        "profile-b": {
+                            "command": "uvx",
+                            "args": ["mineru-open-mcp==1.0.21", "--mode", "b"],
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        refreshed = self.invoke_main("check", "--refresh", "--json")
+        fetched = []
+        reused = self.invoke_main(
+            "check",
+            "--json",
+            fetch_json=lambda url: fetched.append(url) or self.fetch_json(url),
+        )
+        quiet = self.invoke_main("check", "--cached", "--quiet")
+
+        self.assertEqual(refreshed[0], 0, refreshed[2])
+        self.assertEqual(reused[0], 0, reused[2])
+        refreshed_dependencies = json.loads(refreshed[1])["dependencies"]
+        self.assertEqual(
+            [record["server"] for record in refreshed_dependencies],
+            ["profile-a", "profile-b"],
+        )
+        self.assertEqual(
+            json.loads(reused[1])["dependencies"], refreshed_dependencies
+        )
+        self.assertEqual(fetched, [])
+        self.assertEqual(
+            json.loads(self.cache_path.read_text(encoding="utf-8"))["dependencies"],
+            refreshed_dependencies,
+        )
+        self.assertEqual(quiet[0], 0, quiet[2])
+        self.assertEqual(quiet[1], "")
+        self.assertEqual(
+            quiet[2],
+            "MCP dependency update available: "
+            "profile-a/mineru-open-mcp 1.0.21 -> 1.0.22\n",
+        )
 
     def test_empty_dependency_cache_is_valid_and_does_not_fetch(self):
         self.write_cache({"checked_at": time.time(), "dependencies": []})
@@ -1177,16 +1222,27 @@ class McpDependencyCliTests(unittest.TestCase):
         first = self.safe_cached_update()["dependencies"][0]
         second = dict(first)
         second["server"] = "mineru-copy"
+        npm = dict(first)
+        npm.update(
+            {
+                "server": "mineru-npm",
+                "ecosystem": "npm",
+                "metadata_url": "https://registry.npmjs.org/mineru-open-mcp",
+            }
+        )
         stderr = io.StringIO()
 
         with redirect_stderr(stderr):
             MCP_DEPS._print_dependency_check(
-                [first, second], as_json=False, quiet=True
+                [first, second, npm], as_json=False, quiet=True
             )
 
         self.assertEqual(
             stderr.getvalue(),
-            "MCP dependency update available: mineru/mineru-open-mcp 1.0.21 -> 1.0.22\n",
+            "MCP dependency update available: "
+            "mineru/mineru-open-mcp 1.0.21 -> 1.0.22\n"
+            "MCP dependency update available: "
+            "mineru-npm/mineru-open-mcp 1.0.21 -> 1.0.22\n",
         )
 
     def test_cached_quiet_advises_from_safe_cache_without_fetching(self):
@@ -1275,7 +1331,49 @@ class McpDependencyCliTests(unittest.TestCase):
 
         self.assertEqual(rc, 0, stderr)
         self.assertIn("dependencies", json.loads(stdout))
+        self.assertEqual(stat.S_IMODE(self.cache_path.parent.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(self.cache_path.stat().st_mode), 0o600)
+
+    def test_check_creates_exact_cache_modes_under_restrictive_umask(self):
+        real_open = os.open
+        opened_descriptors = []
+
+        def recording_open(path, flags, mode=0o777, *, dir_fd=None):
+            descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+            opened_descriptors.append(descriptor)
+            return descriptor
+
+        previous_umask = os.umask(0o777)
+        try:
+            with mock.patch.object(
+                MCP_DEPS.os, "open", side_effect=recording_open
+            ):
+                rc, stdout, stderr = self.invoke_main(
+                    "check", "--refresh", "--json"
+                )
+        finally:
+            os.umask(previous_umask)
+
+        reuse_fetches = []
+        reused = self.invoke_main(
+            "check",
+            "--json",
+            fetch_json=lambda url: reuse_fetches.append(url) or self.fetch_json(url),
+        )
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("dependencies", json.loads(stdout))
+        self.assertEqual(reused[0], 0, reused[2])
+        self.assertEqual(reuse_fetches, [])
+        self.assertEqual(stat.S_IMODE(self.cache_path.parent.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.cache_path.stat().st_mode), 0o600)
+        self.assertEqual(
+            list(self.cache_path.parent.glob(".mcp-deps.json.*")), []
+        )
+        self.assertTrue(opened_descriptors)
+        for descriptor in opened_descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
 
     def test_cached_quiet_rejects_hardlinked_cache_file(self):
         self.write_cache(self.safe_cached_update())
