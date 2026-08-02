@@ -52,10 +52,7 @@ def join_without_fragment(before, after):
     after = trim_leading_separator(after)
     return before + ("\n\n" if before and after else "") + after
 
-def remove_fragment(value, fragment):
-    parts = value.split(fragment)
-    if len(parts) == 1:
-        return value
+def join_removed_parts(parts):
     cleaned = []
     last = len(parts) - 1
     for index, part in enumerate(parts):
@@ -67,14 +64,69 @@ def remove_fragment(value, fragment):
             cleaned.append(part)
     return "\n\n".join(cleaned)
 
+def remove_fragment(value, fragment):
+    parts = value.split(fragment)
+    if len(parts) == 1:
+        return value
+    return join_removed_parts(parts)
+
+def remove_created_matches(value, fragment):
+    prefix = [0] * len(fragment)
+    matched = 0
+    for index in range(1, len(fragment)):
+        while matched and fragment[index] != fragment[matched]:
+            matched = prefix[matched - 1]
+        if fragment[index] == fragment[matched]:
+            matched += 1
+        prefix[index] = matched
+
+    output = []
+    states = []
+    inserted_separator = []
+    matched = 0
+
+    def push(character, inserted=False):
+        nonlocal matched
+        while matched and character != fragment[matched]:
+            matched = prefix[matched - 1]
+        if character == fragment[matched]:
+            matched += 1
+        output.append(character)
+        states.append(matched)
+        inserted_separator.append(inserted)
+        if matched != len(fragment):
+            return False
+        del output[-len(fragment):]
+        del states[-len(fragment):]
+        del inserted_separator[-len(fragment):]
+        matched = states[-1] if states else 0
+        return True
+
+    for character in value:
+        if push(character):
+            push("\n", inserted=True)
+            push("\n", inserted=True)
+
+    parts = []
+    part = []
+    index = 0
+    while index < len(output):
+        if inserted_separator[index]:
+            parts.append("".join(part))
+            part = []
+            while index < len(output) and inserted_separator[index]:
+                index += 1
+            continue
+        part.append(output[index])
+        index += 1
+    parts.append("".join(part))
+    return join_removed_parts(parts)
+
 def remove_fragment_to_fixed_point(value, fragment):
-    while True:
-        cleaned = remove_fragment(value, fragment)
-        if cleaned == value:
-            return value
-        if len(cleaned) >= len(value):
-            raise RuntimeError("legacy cleanup did not make progress")
-        value = cleaned
+    cleaned = remove_fragment(value, fragment)
+    if fragment not in cleaned:
+        return cleaned
+    return remove_created_matches(cleaned, fragment)
 
 rules = [
     (path.stem, read_raw(path))

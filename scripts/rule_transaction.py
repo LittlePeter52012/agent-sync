@@ -91,12 +91,21 @@ class _Parent:
 class _Artifact:
     parent: _Parent
     name: str
-    identity: tuple[int, int]
     kind: str
+    identity: tuple[int, int] | None = None
+    descriptor: int | None = None
+    created: bool = False
 
     @property
     def path(self) -> Path:
         return self.parent.path / self.name
+
+
+@dataclass
+class _CreatedDirectory:
+    path: Path
+    identity: tuple[int, int] | None = None
+    created: bool = False
 
 
 @dataclass
@@ -171,11 +180,13 @@ def _new_artifact(
     prefix: str,
     kind: str,
     artifacts: list[_Artifact],
-) -> tuple[_Artifact, int]:
+) -> _Artifact:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_CLOEXEC", 0)
     while True:
         name = f"{prefix}{secrets.token_hex(8)}"
+        artifact = _Artifact(parent, name, kind)
+        artifacts.append(artifact)
         try:
             descriptor = os.open(
                 name,
@@ -183,28 +194,22 @@ def _new_artifact(
                 0o600,
                 dir_fd=parent.descriptor,
             )
-            break
         except FileExistsError:
+            artifacts.remove(artifact)
             continue
-    registered = False
-    try:
-        artifact = _Artifact(
-            parent,
-            name,
-            _identity(os.fstat(descriptor)),
-            kind,
-        )
-        artifacts.append(artifact)
-        registered = True
-        return artifact, descriptor
-    except BaseException:
-        os.close(descriptor)
-        if not registered:
+        except BaseException:
             try:
-                os.unlink(name, dir_fd=parent.descriptor)
-            except OSError:
+                metadata = _stat_at(parent, name)
+                if metadata is not None:
+                    artifact.created = True
+                    artifact.identity = _identity(metadata)
+            except BaseException:
                 pass
-        raise
+            raise
+        artifact.descriptor = descriptor
+        artifact.created = True
+        artifact.identity = _identity(os.fstat(descriptor))
+        return artifact
 
 
 def _stage_file(
@@ -215,24 +220,26 @@ def _stage_file(
     mode: int,
     artifacts: list[_Artifact],
 ) -> _Artifact:
-    artifact, descriptor = _new_artifact(parent, prefix, kind, artifacts)
-    raw_descriptor = descriptor
-    try:
-        handle = os.fdopen(descriptor, "wb")
-        raw_descriptor = -1
-        with handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), mode)
-    finally:
-        if raw_descriptor != -1:
-            os.close(raw_descriptor)
+    artifact = _new_artifact(parent, prefix, kind, artifacts)
+    handle = os.fdopen(artifact.descriptor, "wb")
+    artifact.descriptor = None
+    with handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+        os.fchmod(handle.fileno(), mode)
     return artifact
 
 
 def _artifact_matches(artifact: _Artifact) -> bool:
-    return _identity(_stat_at(artifact.parent, artifact.name)) == artifact.identity
+    if artifact.identity is None and artifact.descriptor is not None:
+        artifact.identity = _identity(os.fstat(artifact.descriptor))
+    return (
+        artifact.created
+        and artifact.identity is not None
+        and _identity(_stat_at(artifact.parent, artifact.name))
+        == artifact.identity
+    )
 
 
 def _apply_utime(
@@ -323,7 +330,7 @@ def _destination_is_original(entry: _Entry) -> bool:
 
 def _verify_commit_state(
     entries: list[_Entry],
-    created_directories: list[tuple[Path, tuple[int, int]]],
+    created_directories: list[_CreatedDirectory],
 ) -> None:
     for entry in entries:
         _check_parent(entry.parent)
@@ -338,8 +345,12 @@ def _verify_commit_state(
             raise _IdentityConflict("staged output changed")
         if entry.backup is not None and not _artifact_matches(entry.backup):
             raise _IdentityConflict("output backup changed")
-    for directory, identity in created_directories:
-        if _identity(_lstat(directory)) != identity:
+    for directory in created_directories:
+        if (
+            not directory.created
+            or directory.identity is None
+            or _identity(_lstat(directory.path)) != directory.identity
+        ):
             raise _IdentityConflict("created output directory changed")
 
 
@@ -350,31 +361,53 @@ def _cleanup_artifacts(
 ) -> bool:
     cleaned = True
     for artifact in artifacts:
-        if preserve_backups and artifact.kind == "backup":
-            continue
         try:
+            if artifact.identity is None and artifact.descriptor is not None:
+                artifact.identity = _identity(os.fstat(artifact.descriptor))
+            if preserve_backups and artifact.kind == "backup":
+                continue
             metadata = _stat_at(artifact.parent, artifact.name)
             if metadata is None:
                 continue
-            if _identity(metadata) != artifact.identity:
+            if (
+                not artifact.created
+                or artifact.identity is None
+                or _identity(metadata) != artifact.identity
+            ):
                 cleaned = False
                 continue
             os.unlink(artifact.name, dir_fd=artifact.parent.descriptor)
         except BaseException:
             cleaned = False
+        finally:
+            if artifact.descriptor is not None:
+                try:
+                    os.close(artifact.descriptor)
+                except OSError:
+                    cleaned = False
+                artifact.descriptor = None
     return cleaned
 
 
 def _remove_created_directories(
-    directories: Iterable[tuple[Path, tuple[int, int]]],
+    directories: Iterable[_CreatedDirectory],
 ) -> bool:
     cleaned = True
-    for directory, identity in reversed(list(directories)):
+    for directory in reversed(list(directories)):
         try:
-            if _identity(_lstat(directory)) != identity:
+            metadata = _lstat(directory.path)
+            if not directory.created and metadata is None:
+                continue
+            if directory.identity is None and directory.created:
+                directory.identity = _identity(metadata)
+            if (
+                not directory.created
+                or directory.identity is None
+                or _identity(metadata) != directory.identity
+            ):
                 cleaned = False
                 continue
-            directory.rmdir()
+            directory.path.rmdir()
         except BaseException:
             cleaned = False
     return cleaned
@@ -462,7 +495,7 @@ def publish_outputs(
     entries: list[_Entry] = []
     artifacts: list[_Artifact] = []
     parents: dict[Path, _Parent] = {}
-    created_directories: list[tuple[Path, tuple[int, int]]] = []
+    created_directories: list[_CreatedDirectory] = []
     failure: BaseException | None = None
     try:
         materialized = [(Path(path), bytes(data)) for path, data in outputs]
@@ -481,21 +514,24 @@ def publish_outputs(
 
         for directory in missing_directories:
             if _lstat(directory) is None:
+                created = _CreatedDirectory(directory)
+                created_directories.append(created)
                 try:
                     directory.mkdir()
+                    created.created = True
                     metadata = directory.lstat()
-                    created_directories.append((directory, _identity(metadata)))
-                except BaseException as error:
-                    already_registered = any(
-                        path == directory
-                        for path, _identity_value in created_directories
-                    )
-                    if not isinstance(error, Exception) and not already_registered:
-                        metadata = _lstat(directory)
+                    created.identity = _identity(metadata)
+                except FileExistsError:
+                    created_directories.remove(created)
+                except BaseException:
+                    if not created.created:
+                        try:
+                            metadata = _lstat(directory)
+                        except BaseException:
+                            metadata = None
                         if metadata is not None and stat.S_ISDIR(metadata.st_mode):
-                            created_directories.append(
-                                (directory, _identity(metadata))
-                            )
+                            created.created = True
+                            created.identity = _identity(metadata)
                     raise
             _validate_directory(directory)
 
@@ -583,12 +619,28 @@ def publish_outputs(
             _check_parent(parent)
         except BaseException:
             identity_conflict = True
-    for directory, identity in created_directories:
-        if _identity(_lstat(directory)) != identity:
+    for directory in created_directories:
+        try:
+            metadata = _lstat(directory.path)
+            if directory.identity is None and directory.created:
+                directory.identity = _identity(metadata)
+            if directory.created:
+                if (
+                    directory.identity is None
+                    or _identity(metadata) != directory.identity
+                ):
+                    identity_conflict = True
+            elif metadata is not None:
+                identity_conflict = True
+        except BaseException:
             identity_conflict = True
     for artifact in artifacts:
-        if artifact.kind == "backup" and not _artifact_matches(artifact):
-            identity_conflict = True
+        if artifact.kind == "backup":
+            try:
+                if not _artifact_matches(artifact):
+                    identity_conflict = True
+            except BaseException:
+                identity_conflict = True
     for entry in entries:
         try:
             is_stage = _destination_is_stage(entry)

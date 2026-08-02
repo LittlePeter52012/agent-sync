@@ -728,6 +728,62 @@ class SyncRulesTests(unittest.TestCase):
                 self.assertEqual(data[: parsed.blocks[0].start], b"")
                 self.assertEqual(data.count(rule.encode("utf-8")), 1)
 
+    def test_short_legacy_rules_accept_separator_length_growth(self):
+        cases = (
+            ("one-char-delete", "A", "AA", b""),
+            ("one-char-growth", "C", "ACA", b"A\n\nA\n\n"),
+            ("two-char-equal", "CC", "ACCA", b"A\n\nA\n\n"),
+        )
+        for label, rule, unmanaged, expected_prefix in cases:
+            with self.subTest(label=label):
+                for path in self.rules.glob("*.md"):
+                    path.unlink()
+                (self.rules / "legacy.md").write_text(
+                    rule,
+                    encoding="utf-8",
+                )
+                self.initialize_aggregate_targets(unmanaged)
+
+                first_result = self.run_sync(check=False)
+                first = self.aggregate_bytes()
+                second_result = self.run_sync(check=False)
+
+                self.assertEqual(first_result.returncode, 0, first_result.stderr)
+                self.assertEqual(second_result.returncode, 0, second_result.stderr)
+                self.assertNotIn("Traceback", first_result.stderr)
+                self.assertEqual(self.aggregate_bytes(), first)
+                for data in first.values():
+                    parsed = rule_blocks.parse_managed_blocks(
+                        data.decode("utf-8"),
+                        {"legacy"},
+                    )
+                    self.assertEqual(data[: parsed.blocks[0].start], expected_prefix)
+                    self.assertEqual(data.count(rule.encode("utf-8")), 1)
+
+    def test_nested_32kb_legacy_overlap_reduces_in_linear_time(self):
+        for path in self.rules.glob("*.md"):
+            path.unlink()
+        rule = "A\n\nA"
+        (self.rules / "legacy.md").write_text(rule, encoding="utf-8")
+        nested = "A" * 16384 + "\n\n" + "A" * 16384
+        self.initialize_aggregate_targets(nested)
+
+        started = time.monotonic()
+        self.run_sync()
+        elapsed = time.monotonic() - started
+        first = self.aggregate_bytes()
+        self.run_sync()
+
+        self.assertLess(elapsed, 5.0)
+        self.assertEqual(self.aggregate_bytes(), first)
+        for data in first.values():
+            parsed = rule_blocks.parse_managed_blocks(
+                data.decode("utf-8"),
+                {"legacy"},
+            )
+            self.assertEqual(data[: parsed.blocks[0].start], b"")
+            self.assertEqual(data.count(rule.encode("utf-8")), 1)
+
     def test_legacy_cleanup_removes_8000_and_32000_copies_quickly(self):
         for path in self.rules.glob("*.md"):
             path.unlink()
@@ -857,6 +913,31 @@ class RuleTransactionTests(unittest.TestCase):
         self.assertFalse(output_parent.exists())
         self.assertEqual(self.transaction_artifacts(), [])
 
+    def test_directory_lstat_error_after_mkdir_uses_provisional_journal(self):
+        from scripts import rule_transaction
+
+        output_parent = self.root / "created-parent"
+        target = output_parent / "target.md"
+        real_lstat = Path.lstat
+        injected = False
+
+        def fail_first_post_mkdir_lstat(path):
+            nonlocal injected
+            if path == output_parent and path.exists() and not injected:
+                injected = True
+                raise OSError("injected directory lstat failure")
+            return real_lstat(path)
+
+        with mock.patch.object(Path, "lstat", new=fail_first_post_mkdir_lstat):
+            with self.assertRaises(
+                rule_transaction.OutputTransactionError
+            ) as raised:
+                rule_transaction.publish_outputs(((target, b"replacement\n"),))
+
+        self.assertTrue(raised.exception.recovered)
+        self.assertFalse(output_parent.exists())
+        self.assertEqual(self.transaction_artifacts(), [])
+
     def test_backup_timestamp_failure_is_registered_and_cleaned(self):
         from scripts import rule_transaction
 
@@ -911,6 +992,40 @@ class RuleTransactionTests(unittest.TestCase):
 
                 self.assertEqual(self.snapshot(), before)
                 self.assertEqual(self.transaction_artifacts(), [])
+
+    def test_unremovable_pre_registration_artifact_is_unrecovered(self):
+        from scripts import rule_transaction
+
+        target = self.root / "new.md"
+        real_fstat = os.fstat
+        calls = 0
+
+        def fail_stage_fstat(descriptor):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected stage fstat failure")
+            return real_fstat(descriptor)
+
+        def fail_unlink(*_args, **_kwargs):
+            raise OSError("injected artifact unlink failure")
+
+        with mock.patch.object(
+            rule_transaction.os,
+            "fstat",
+            side_effect=fail_stage_fstat,
+        ), mock.patch.object(
+            rule_transaction.os,
+            "unlink",
+            side_effect=fail_unlink,
+        ):
+            with self.assertRaises(
+                rule_transaction.OutputTransactionError
+            ) as raised:
+                rule_transaction.publish_outputs(((target, b"replacement\n"),))
+
+        self.assertFalse(raised.exception.recovered)
+        self.assertEqual(len(self.transaction_artifacts()), 1)
 
     def test_each_rollback_operation_failure_preserves_recovery_backup(self):
         from scripts import rule_transaction
