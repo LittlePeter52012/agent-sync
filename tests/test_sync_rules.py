@@ -868,6 +868,50 @@ class RuleTransactionTests(unittest.TestCase):
             (root / "nested" / "created.md", b"nested created\n"),
         )
 
+    def _assert_backup_open_failure(self, *, after_creation, error_type):
+        from scripts import rule_transaction
+
+        target = self.root / "target.md"
+        target.write_bytes(b"original\n")
+        target.chmod(0o640)
+        os.utime(target, ns=(1_600_000_000_000_000_000,) * 2)
+        before = self.snapshot()
+        real_open = os.open
+        injections = 0
+
+        def fail_backup_open(path, *args, **kwargs):
+            nonlocal injections
+            if str(path).startswith(".agent-sync-rule-backup-"):
+                injections += 1
+                if after_creation:
+                    descriptor = real_open(path, *args, **kwargs)
+                    os.close(descriptor)
+                raise error_type("injected backup open failure")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(
+            rule_transaction.os,
+            "open",
+            side_effect=fail_backup_open,
+        ):
+            if error_type is KeyboardInterrupt:
+                with self.assertRaises(KeyboardInterrupt):
+                    rule_transaction.publish_outputs(
+                        ((target, b"replacement\n"),)
+                    )
+            else:
+                with self.assertRaises(
+                    rule_transaction.OutputTransactionError
+                ) as raised:
+                    rule_transaction.publish_outputs(
+                        ((target, b"replacement\n"),)
+                    )
+                self.assertTrue(raised.exception.recovered)
+
+        self.assertEqual(injections, 1)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.transaction_artifacts(), [])
+
     def test_keyboard_interrupt_at_every_commit_position_restores_everything(self):
         from scripts import rule_transaction
 
@@ -957,6 +1001,30 @@ class RuleTransactionTests(unittest.TestCase):
         self.assertTrue(raised.exception.recovered)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.transaction_artifacts(), [])
+
+    def test_backup_open_oserror_before_creation_is_recovered(self):
+        self._assert_backup_open_failure(
+            after_creation=False,
+            error_type=OSError,
+        )
+
+    def test_backup_open_interrupt_before_creation_is_reraised(self):
+        self._assert_backup_open_failure(
+            after_creation=False,
+            error_type=KeyboardInterrupt,
+        )
+
+    def test_backup_open_oserror_after_creation_is_recovered(self):
+        self._assert_backup_open_failure(
+            after_creation=True,
+            error_type=OSError,
+        )
+
+    def test_backup_open_interrupt_after_creation_is_reraised(self):
+        self._assert_backup_open_failure(
+            after_creation=True,
+            error_type=KeyboardInterrupt,
+        )
 
     def test_interrupt_during_new_stage_or_backup_registration_leaves_no_artifact(self):
         from scripts import rule_transaction

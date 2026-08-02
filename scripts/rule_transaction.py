@@ -637,7 +637,13 @@ def publish_outputs(
     for artifact in artifacts:
         if artifact.kind == "backup":
             try:
-                if not _artifact_matches(artifact):
+                if (
+                    artifact.created
+                    and not _artifact_matches(artifact)
+                ) or (
+                    not artifact.created
+                    and _stat_at(artifact.parent, artifact.name) is not None
+                ):
                     identity_conflict = True
             except BaseException:
                 identity_conflict = True
