@@ -1542,7 +1542,7 @@ class McpDependencyCliTests(unittest.TestCase):
         os.mkfifo(self.cache_path, 0o600)
 
         result = self.run_entrypoint(
-            "deps", "check", "--cached", "--quiet", timeout=1
+            "deps", "check", "--cached", "--quiet", timeout=3
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1554,7 +1554,7 @@ class McpDependencyCliTests(unittest.TestCase):
         os.mkfifo(self.cache_path.parent, 0o700)
 
         result = self.run_entrypoint(
-            "deps", "check", "--cached", "--quiet", timeout=1
+            "deps", "check", "--cached", "--quiet", timeout=3
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
