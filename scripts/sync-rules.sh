@@ -30,6 +30,7 @@ from rule_blocks import (
     preferred_newline,
     source_marker_issues,
 )
+from rule_transaction import OutputTransactionError, publish_outputs
 
 rules_dir = Path(sys.argv[2])
 home = Path(sys.argv[3])
@@ -37,10 +38,6 @@ home = Path(sys.argv[3])
 def read_raw(path):
     with path.open("r", encoding="utf-8", newline="") as handle:
         return handle.read()
-
-def write_raw(path, text):
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
 
 def trim_trailing_separator(value):
     value = re.sub(r"(?:(?:\r\n|\n|\r)[ \t]*)+$", "", value)
@@ -55,13 +52,20 @@ def join_without_fragment(before, after):
     after = trim_leading_separator(after)
     return before + ("\n\n" if before and after else "") + after
 
-def remove_matches(value, pattern):
-    while match := pattern.search(value):
-        value = join_without_fragment(
-            value[:match.start()],
-            value[match.end():],
-        )
-    return value
+def remove_fragment(value, fragment):
+    parts = value.split(fragment)
+    if len(parts) == 1:
+        return value
+    cleaned = []
+    last = len(parts) - 1
+    for index, part in enumerate(parts):
+        if index:
+            part = trim_leading_separator(part)
+        if index < last:
+            part = trim_trailing_separator(part)
+        if part:
+            cleaned.append(part)
+    return "\n\n".join(cleaned)
 
 rules = [
     (path.stem, read_raw(path))
@@ -125,9 +129,9 @@ for target, include_priority in target_specs:
             text[managed.end:],
         )
     for candidate in legacy_candidates:
-        text = remove_matches(text, re.compile(re.escape(candidate)))
+        text = remove_fragment(text, candidate)
     if include_priority and "math-router-rule" in names:
-        text = remove_matches(text, re.compile(re.escape(MATH_PRIORITY)))
+        text = remove_fragment(text, MATH_PRIORITY)
     text = trim_trailing_separator(text)
     blocks = [
         build_managed_block(name, rule, include_priority)
@@ -152,9 +156,20 @@ applyTo: "**"
         body += preferred_newline(rule)
     outputs.append((target, body))
 
-copilot_dir.mkdir(parents=True, exist_ok=True)
-for target, text in outputs:
-    write_raw(target, text)
+try:
+    publish_outputs(
+        (target, text.encode("utf-8"))
+        for target, text in outputs
+    )
+except OutputTransactionError:
+    print(
+        "ERROR: rule synchronization output transaction failed; "
+        "no files changed.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+for target, _text in outputs:
     print(f"  ✓ injected → {target}")
 for target, _include_priority in target_specs:
     if target_inputs[target] is None:

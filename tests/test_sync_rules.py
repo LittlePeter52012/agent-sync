@@ -1,7 +1,9 @@
 import json
 import os
+import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -92,6 +94,30 @@ class SyncRulesTests(unittest.TestCase):
             for path in paths
             if path.exists()
         }
+
+    def tree_snapshot(self, root=None):
+        root = root or self.home
+        snapshot = {}
+        if not root.exists():
+            return snapshot
+        for path in sorted(root.rglob("*")):
+            relative = str(path.relative_to(root))
+            metadata = path.lstat()
+            mode = stat.S_IMODE(metadata.st_mode)
+            if stat.S_ISREG(metadata.st_mode):
+                snapshot[relative] = (
+                    "file",
+                    path.read_bytes(),
+                    mode,
+                    metadata.st_mtime_ns,
+                )
+            elif stat.S_ISDIR(metadata.st_mode):
+                snapshot[relative] = ("directory", mode)
+            elif stat.S_ISLNK(metadata.st_mode):
+                snapshot[relative] = ("symlink", os.readlink(path), mode)
+            else:
+                snapshot[relative] = ("other", mode)
+        return snapshot
 
     def test_aggregate_rules_are_byte_idempotent_for_empty_targets(self):
         self.initialize_aggregate_targets("")
@@ -591,6 +617,122 @@ class SyncRulesTests(unittest.TestCase):
         for data in first.values():
             self.assertTrue(data.startswith(unmanaged))
             self.assertIn(rule, data)
+
+    def test_transaction_rejects_unwritable_second_aggregate_without_changes(self):
+        self.initialize_aggregate_targets("")
+        self.run_sync()
+        (self.rules / "alpha.md").write_text(
+            "[Alpha Rule]\nChanged body.\n",
+            encoding="utf-8",
+        )
+        codex = self.home / ".codex" / "AGENTS.md"
+        codex.chmod(0o444)
+        before = self.tree_snapshot()
+
+        try:
+            result = self.run_sync(check=False)
+            after = self.tree_snapshot()
+        finally:
+            codex.chmod(0o644)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stderr,
+            "ERROR: rule synchronization output transaction failed; "
+            "no files changed.\n",
+        )
+        self.assertEqual(after, before)
+
+    def test_transaction_rejects_late_copilot_path_conflict_without_changes(self):
+        self.initialize_aggregate_targets("")
+        self.run_sync()
+        (self.rules / "alpha.md").write_text(
+            "[Alpha Rule]\nChanged body.\n",
+            encoding="utf-8",
+        )
+        beta = (
+            self.home
+            / ".copilot"
+            / "instructions"
+            / "beta.instructions.md"
+        )
+        beta.unlink()
+        beta.mkdir()
+        before = self.tree_snapshot()
+
+        result = self.run_sync(check=False)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stderr,
+            "ERROR: rule synchronization output transaction failed; "
+            "no files changed.\n",
+        )
+        self.assertEqual(self.tree_snapshot(), before)
+
+    def test_transaction_rolls_back_an_injected_late_replace_failure(self):
+        from scripts import rule_transaction
+
+        transaction_root = self.root / "transaction"
+        transaction_root.mkdir()
+        first = transaction_root / "first.md"
+        second = transaction_root / "second.md"
+        created = transaction_root / "created.md"
+        first.write_bytes(b"first original\n")
+        second.write_bytes(b"second original\n")
+        first.chmod(0o640)
+        second.chmod(0o600)
+        before = self.tree_snapshot(transaction_root)
+        replacements = 0
+
+        def fail_third_replace(source, destination):
+            nonlocal replacements
+            replacements += 1
+            if replacements == 3:
+                raise OSError("injected late replace failure")
+            os.replace(source, destination)
+
+        with self.assertRaises(rule_transaction.OutputTransactionError):
+            rule_transaction.publish_outputs(
+                (
+                    (first, b"first replacement\n"),
+                    (created, b"new file\n"),
+                    (second, b"second replacement\n"),
+                ),
+                replace=fail_third_replace,
+            )
+
+        self.assertEqual(self.tree_snapshot(transaction_root), before)
+
+    def test_legacy_cleanup_removes_8000_copies_with_linear_runtime(self):
+        for path in self.rules.glob("*.md"):
+            path.unlink()
+        legacy_rule = "[Legacy Rule]\nBody"
+        (self.rules / "legacy.md").write_text(
+            legacy_rule,
+            encoding="utf-8",
+        )
+        self.initialize_aggregate_targets(
+            (legacy_rule + "\n\n") * 8000 + "KEEP\n"
+        )
+
+        started = time.monotonic()
+        self.run_sync()
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 4.0)
+        for relative, data in self.aggregate_bytes().items():
+            with self.subTest(target=relative):
+                parsed = rule_blocks.parse_managed_blocks(
+                    data.decode("utf-8"),
+                    {"legacy"},
+                )
+                self.assertEqual(len(parsed.blocks), 1)
+                self.assertEqual(data[: parsed.blocks[0].start], b"KEEP\n\n")
+                self.assertEqual(
+                    data.count(legacy_rule.encode("utf-8")),
+                    1,
+                )
 
 
 if __name__ == "__main__":
