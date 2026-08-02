@@ -67,6 +67,15 @@ def remove_fragment(value, fragment):
             cleaned.append(part)
     return "\n\n".join(cleaned)
 
+def remove_fragment_to_fixed_point(value, fragment):
+    while True:
+        cleaned = remove_fragment(value, fragment)
+        if cleaned == value:
+            return value
+        if len(cleaned) >= len(value):
+            raise RuntimeError("legacy cleanup did not make progress")
+        value = cleaned
+
 rules = [
     (path.stem, read_raw(path))
     for path in sorted(rules_dir.glob("*.md"))
@@ -129,9 +138,9 @@ for target, include_priority in target_specs:
             text[managed.end:],
         )
     for candidate in legacy_candidates:
-        text = remove_fragment(text, candidate)
+        text = remove_fragment_to_fixed_point(text, candidate)
     if include_priority and "math-router-rule" in names:
-        text = remove_fragment(text, MATH_PRIORITY)
+        text = remove_fragment_to_fixed_point(text, MATH_PRIORITY)
     text = trim_trailing_separator(text)
     blocks = [
         build_managed_block(name, rule, include_priority)
@@ -161,10 +170,13 @@ try:
         (target, text.encode("utf-8"))
         for target, text in outputs
     )
-except OutputTransactionError:
+except OutputTransactionError as error:
+    if error.recovered:
+        detail = "no files changed."
+    else:
+        detail = "manual recovery required."
     print(
-        "ERROR: rule synchronization output transaction failed; "
-        "no files changed.",
+        "ERROR: rule synchronization output transaction failed; " + detail,
         file=sys.stderr,
     )
     raise SystemExit(1)

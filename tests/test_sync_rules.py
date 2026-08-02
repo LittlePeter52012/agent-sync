@@ -1,10 +1,12 @@
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from scripts import rule_blocks
@@ -704,7 +706,29 @@ class SyncRulesTests(unittest.TestCase):
 
         self.assertEqual(self.tree_snapshot(transaction_root), before)
 
-    def test_legacy_cleanup_removes_8000_copies_with_linear_runtime(self):
+    def test_legacy_cleanup_reaches_fixed_point_after_boundary_join(self):
+        for path in self.rules.glob("*.md"):
+            path.unlink()
+        rule = "A\n\nA"
+        (self.rules / "legacy.md").write_text(rule, encoding="utf-8")
+        self.initialize_aggregate_targets("AA\n\nAA")
+
+        self.run_sync()
+        first = self.aggregate_bytes()
+        self.run_sync()
+
+        self.assertEqual(self.aggregate_bytes(), first)
+        for relative, data in first.items():
+            with self.subTest(target=relative):
+                parsed = rule_blocks.parse_managed_blocks(
+                    data.decode("utf-8"),
+                    {"legacy"},
+                )
+                self.assertEqual(len(parsed.blocks), 1)
+                self.assertEqual(data[: parsed.blocks[0].start], b"")
+                self.assertEqual(data.count(rule.encode("utf-8")), 1)
+
+    def test_legacy_cleanup_removes_8000_and_32000_copies_quickly(self):
         for path in self.rules.glob("*.md"):
             path.unlink()
         legacy_rule = "[Legacy Rule]\nBody"
@@ -712,27 +736,368 @@ class SyncRulesTests(unittest.TestCase):
             legacy_rule,
             encoding="utf-8",
         )
-        self.initialize_aggregate_targets(
-            (legacy_rule + "\n\n") * 8000 + "KEEP\n"
+        for copies in (8000, 32000):
+            with self.subTest(copies=copies):
+                self.initialize_aggregate_targets(
+                    (legacy_rule + "\n\n") * copies + "KEEP\n"
+                )
+                started = time.monotonic()
+                self.run_sync()
+                elapsed = time.monotonic() - started
+
+                self.assertLess(elapsed, 6.0)
+                for relative, data in self.aggregate_bytes().items():
+                    parsed = rule_blocks.parse_managed_blocks(
+                        data.decode("utf-8"),
+                        {"legacy"},
+                    )
+                    self.assertEqual(len(parsed.blocks), 1)
+                    self.assertEqual(data[: parsed.blocks[0].start], b"KEEP\n\n")
+                    self.assertEqual(
+                        data.count(legacy_rule.encode("utf-8")),
+                        1,
+                    )
+
+
+class RuleTransactionTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def snapshot(self, root=None):
+        root = root or self.root
+        snapshot = {}
+        for path in sorted(root.rglob("*")):
+            metadata = path.lstat()
+            relative = str(path.relative_to(root))
+            mode = stat.S_IMODE(metadata.st_mode)
+            if stat.S_ISREG(metadata.st_mode):
+                snapshot[relative] = (
+                    "file",
+                    path.read_bytes(),
+                    mode,
+                    metadata.st_mtime_ns,
+                )
+            elif stat.S_ISDIR(metadata.st_mode):
+                snapshot[relative] = ("directory", mode)
+            else:
+                snapshot[relative] = ("other", mode)
+        return snapshot
+
+    def transaction_artifacts(self, root=None):
+        root = root or self.root
+        return sorted(
+            path
+            for path in root.rglob(".agent-sync-rule-*")
+            if path.is_file()
         )
 
-        started = time.monotonic()
-        self.run_sync()
-        elapsed = time.monotonic() - started
+    def make_mixed_outputs(self, root):
+        root.mkdir()
+        first = root / "first.md"
+        second = root / "second.md"
+        first.write_bytes(b"first original\n")
+        second.write_bytes(b"second original\n")
+        first.chmod(0o640)
+        second.chmod(0o600)
+        os.utime(first, ns=(1_600_000_000_000_000_000,) * 2)
+        os.utime(second, ns=(1_610_000_000_000_000_000,) * 2)
+        return (
+            (first, b"first replacement\n"),
+            (root / "created.md", b"created\n"),
+            (second, b"second replacement\n"),
+            (root / "nested" / "created.md", b"nested created\n"),
+        )
 
-        self.assertLess(elapsed, 4.0)
-        for relative, data in self.aggregate_bytes().items():
-            with self.subTest(target=relative):
-                parsed = rule_blocks.parse_managed_blocks(
-                    data.decode("utf-8"),
-                    {"legacy"},
+    def test_keyboard_interrupt_at_every_commit_position_restores_everything(self):
+        from scripts import rule_transaction
+
+        for fail_at in range(1, 5):
+            with self.subTest(fail_at=fail_at):
+                transaction_root = self.root / f"interrupt-{fail_at}"
+                outputs = self.make_mixed_outputs(transaction_root)
+                before = self.snapshot(transaction_root)
+                replacements = 0
+
+                def interrupt_commit(source, destination):
+                    nonlocal replacements
+                    replacements += 1
+                    if replacements == fail_at:
+                        raise KeyboardInterrupt
+                    os.replace(source, destination)
+
+                with self.assertRaises(KeyboardInterrupt):
+                    rule_transaction.publish_outputs(
+                        outputs,
+                        replace=interrupt_commit,
+                    )
+
+                self.assertEqual(self.snapshot(transaction_root), before)
+                self.assertEqual(self.transaction_artifacts(transaction_root), [])
+
+    def test_interrupt_after_creating_output_directory_removes_it(self):
+        from scripts import rule_transaction
+
+        output_parent = self.root / "created-parent"
+        target = output_parent / "target.md"
+        real_mkdir = Path.mkdir
+
+        def mkdir_then_interrupt(path, *args, **kwargs):
+            real_mkdir(path, *args, **kwargs)
+            if path == output_parent:
+                raise KeyboardInterrupt
+
+        with mock.patch.object(Path, "mkdir", new=mkdir_then_interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                rule_transaction.publish_outputs(((target, b"replacement\n"),))
+
+        self.assertFalse(output_parent.exists())
+        self.assertEqual(self.transaction_artifacts(), [])
+
+    def test_backup_timestamp_failure_is_registered_and_cleaned(self):
+        from scripts import rule_transaction
+
+        target = self.root / "target.md"
+        target.write_bytes(b"original\n")
+        before = self.snapshot()
+
+        def fail_utime(_path, *, ns):
+            raise OSError(f"injected utime failure: {ns}")
+
+        with self.assertRaises(rule_transaction.OutputTransactionError) as raised:
+            rule_transaction.publish_outputs(
+                ((target, b"replacement\n"),),
+                utime=fail_utime,
+            )
+
+        self.assertTrue(raised.exception.recovered)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.transaction_artifacts(), [])
+
+    def test_interrupt_during_new_stage_or_backup_registration_leaves_no_artifact(self):
+        from scripts import rule_transaction
+
+        cases = (
+            ("stage", self.root / "new.md", 2),
+            ("backup", self.root / "existing.md", 5),
+        )
+        for label, target, interrupt_at in cases:
+            with self.subTest(label=label):
+                if label == "backup":
+                    target.write_bytes(b"original\n")
+                before = self.snapshot()
+                real_fstat = os.fstat
+                calls = 0
+
+                def interrupt_fstat(descriptor):
+                    nonlocal calls
+                    calls += 1
+                    if calls == interrupt_at:
+                        raise KeyboardInterrupt
+                    return real_fstat(descriptor)
+
+                with mock.patch.object(
+                    rule_transaction.os,
+                    "fstat",
+                    side_effect=interrupt_fstat,
+                ):
+                    with self.assertRaises(KeyboardInterrupt):
+                        rule_transaction.publish_outputs(
+                            ((target, b"replacement\n"),)
+                        )
+
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.transaction_artifacts(), [])
+
+    def test_each_rollback_operation_failure_preserves_recovery_backup(self):
+        from scripts import rule_transaction
+
+        for operation in ("replace", "chmod", "utime"):
+            with self.subTest(operation=operation):
+                transaction_root = self.root / f"rollback-{operation}"
+                transaction_root.mkdir()
+                first = transaction_root / "first.md"
+                second = transaction_root / "second.md"
+                first.write_bytes(b"first original\n")
+                second.write_bytes(b"second original\n")
+                commits = 0
+
+                def fail_second_commit(source, destination):
+                    nonlocal commits
+                    commits += 1
+                    if commits == 2:
+                        raise OSError("injected second commit failure")
+                    os.replace(source, destination)
+
+                def fail_rollback_replace(_source, _destination):
+                    raise OSError("injected rollback replace failure")
+
+                def fail_rollback_chmod(_path, _mode):
+                    raise OSError("injected rollback chmod failure")
+
+                def fail_rollback_utime(_path, *, ns):
+                    raise OSError(f"injected rollback utime failure: {ns}")
+
+                kwargs = {
+                    "rollback_replace": (
+                        fail_rollback_replace if operation == "replace" else None
+                    ),
+                    "rollback_chmod": (
+                        fail_rollback_chmod if operation == "chmod" else None
+                    ),
+                    "rollback_utime": (
+                        fail_rollback_utime if operation == "utime" else None
+                    ),
+                }
+                with self.assertRaises(
+                    rule_transaction.OutputTransactionError
+                ) as raised:
+                    rule_transaction.publish_outputs(
+                        (
+                            (first, b"first replacement\n"),
+                            (second, b"second replacement\n"),
+                        ),
+                        replace=fail_second_commit,
+                        **kwargs,
+                    )
+
+                self.assertFalse(raised.exception.recovered)
+                backups = self.transaction_artifacts(transaction_root)
+                self.assertTrue(
+                    any(path.read_bytes() == b"first original\n" for path in backups)
                 )
-                self.assertEqual(len(parsed.blocks), 1)
-                self.assertEqual(data[: parsed.blocks[0].start], b"KEEP\n\n")
-                self.assertEqual(
-                    data.count(legacy_rule.encode("utf-8")),
-                    1,
-                )
+
+    def test_concurrent_destination_replace_is_not_overwritten(self):
+        from scripts import rule_transaction
+
+        first = self.root / "first.md"
+        second = self.root / "second.md"
+        first.write_bytes(b"first original\n")
+        second.write_bytes(b"second original\n")
+        commits = 0
+
+        def replace_then_concurrent_write(source, destination):
+            nonlocal commits
+            commits += 1
+            if commits == 2:
+                concurrent = self.root / "concurrent.tmp"
+                concurrent.write_bytes(b"CONCURRENT\n")
+                os.replace(concurrent, first)
+                raise OSError("stop after concurrent write")
+            os.replace(source, destination)
+
+        with self.assertRaises(rule_transaction.OutputTransactionError) as raised:
+            rule_transaction.publish_outputs(
+                (
+                    (first, b"first replacement\n"),
+                    (second, b"second replacement\n"),
+                ),
+                replace=replace_then_concurrent_write,
+            )
+
+        self.assertFalse(raised.exception.recovered)
+        self.assertEqual(first.read_bytes(), b"CONCURRENT\n")
+        self.assertEqual(second.read_bytes(), b"second original\n")
+        self.assertTrue(
+            any(
+                path.read_bytes() == b"first original\n"
+                for path in self.transaction_artifacts()
+            )
+        )
+
+    def test_parent_path_swap_does_not_publish_into_replacement_directory(self):
+        from scripts import rule_transaction
+
+        parent = self.root / "outputs"
+        parent.mkdir()
+        target = parent / "target.md"
+        target.write_bytes(b"original\n")
+        moved = self.root / "moved-outputs"
+
+        def swap_parent(_source, _destination):
+            parent.rename(moved)
+            parent.mkdir()
+            (parent / "target.md").write_bytes(b"CONCURRENT\n")
+            raise OSError("parent swapped")
+
+        with self.assertRaises(rule_transaction.OutputTransactionError) as raised:
+            rule_transaction.publish_outputs(
+                ((target, b"replacement\n"),),
+                replace=swap_parent,
+            )
+
+        self.assertFalse(raised.exception.recovered)
+        self.assertEqual((parent / "target.md").read_bytes(), b"CONCURRENT\n")
+        self.assertEqual((moved / "target.md").read_bytes(), b"original\n")
+        self.assertTrue(
+            any(
+                path.read_bytes() == b"original\n"
+                for path in self.transaction_artifacts(moved)
+            )
+        )
+
+    def test_existing_hardlink_destination_is_rejected_without_mutation(self):
+        from scripts import rule_transaction
+
+        target = self.root / "target.md"
+        peer = self.root / "peer.md"
+        target.write_bytes(b"original\n")
+        os.link(target, peer)
+        before = self.snapshot()
+
+        with self.assertRaises(rule_transaction.OutputTransactionError) as raised:
+            rule_transaction.publish_outputs(((target, b"replacement\n"),))
+
+        self.assertTrue(raised.exception.recovered)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(target.stat().st_ino, peer.stat().st_ino)
+
+    def test_cli_reports_manual_recovery_for_incomplete_rollback(self):
+        script_dir = self.root / "scripts"
+        script_dir.mkdir()
+        for name in ("sync-rules.sh", "lib.sh", "rule_blocks.py"):
+            shutil.copy2(REPO / "scripts" / name, script_dir / name)
+        (script_dir / "rule_transaction.py").write_text(
+            "class OutputTransactionError(RuntimeError):\n"
+            "    def __init__(self, *, recovered):\n"
+            "        self.recovered = recovered\n"
+            "\n"
+            "def publish_outputs(outputs):\n"
+            "    list(outputs)\n"
+            "    raise OutputTransactionError(recovered=False)\n",
+            encoding="utf-8",
+        )
+        hub = self.root / "hub"
+        rules = hub / "rules"
+        rules.mkdir(parents=True)
+        (rules / "alpha.md").write_text("[Alpha]\n", encoding="utf-8")
+        home = self.root / "home"
+        for relative in AGGREGATE_TARGETS:
+            target = home / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("USER\n", encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(script_dir / "sync-rules.sh")],
+            cwd=self.root,
+            env=os.environ
+            | {
+                "HOME": str(home),
+                "AGENT_HUB_ROOT": str(hub),
+            },
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stderr,
+            "ERROR: rule synchronization output transaction failed; "
+            "manual recovery required.\n",
+        )
 
 
 if __name__ == "__main__":
