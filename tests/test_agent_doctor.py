@@ -1063,6 +1063,82 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("required-plugin", messages)
         self.assertIn("forbidden-plugin@market", messages)
 
+    def test_doctor_reports_capability_ownership_conflict_as_managed(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["official"],
+                                        "selection": "hub",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin = self.home / ".cursor/plugins/local/official"
+        (plugin / "skills/provider").mkdir(parents=True)
+        (plugin / "skills/provider/SKILL.md").write_text(
+            "# Provider\n",
+            encoding="utf-8",
+        )
+        cursor = self.home / ".cursor"
+        cursor.mkdir(exist_ok=True)
+        (cursor / "mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"shared": {"command": "shared-mcp"}}}
+            ),
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        finding = next(
+            item
+            for item in report["findings"]
+            if "example" in item["message"]
+            and "ownership-conflict" in item["message"]
+        )
+
+        self.assertEqual(finding["scope"], "managed")
+        self.assertEqual(finding["owner"], "hub")
+
+    def test_doctor_accepts_explicitly_disabled_capability_without_mcp(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {
+                                    "cursor": {"selection": "disabled"}
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(item["message"] for item in report["findings"])
+
+        self.assertNotIn("Cursor shared MCP shared", messages)
+        self.assertNotIn("Cursor shared MCP coverage", messages)
+
     def test_doctor_audits_codex_orchestration_and_stale_hook_state(self):
         policy = self.hub / "policies"
         policy.mkdir()

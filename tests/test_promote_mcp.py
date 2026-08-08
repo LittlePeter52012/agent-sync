@@ -1044,6 +1044,135 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("shared", servers)
         self.assertIn("retire-me", servers)
 
+    def test_sync_removes_semantically_mapped_hub_mcp_for_cursor_plugin(self):
+        self.canonical.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "cloudflare-local": {
+                            "type": "http",
+                            "url": "https://mcp.cloudflare.com/mcp",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.hub / "policies").mkdir()
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "cloudflare": {
+                                "hub": {
+                                    "skills": [],
+                                    "mcp": ["cloudflare-local"],
+                                },
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["memory"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.write_cursor_plugin(
+            {
+                "cloudflare-docs": {
+                    "type": "http",
+                    "url": "https://docs.mcp.cloudflare.com/mcp",
+                }
+            }
+        )
+        cursor_path = self.home / ".cursor" / "mcp.json"
+        cursor_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "cloudflare-local": {
+                            "type": "http",
+                            "url": "https://mcp.cloudflare.com/mcp",
+                        },
+                        "cursor-native": {"command": "native-command"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_agent_sync("mcp")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        servers = json.loads(cursor_path.read_text())["mcpServers"]
+        self.assertNotIn("cloudflare-local", servers)
+        self.assertIn("cursor-native", servers)
+
+    def test_sync_restores_semantically_mapped_hub_mcp_after_plugin_disappears(self):
+        self.canonical.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "cloudflare-local": {
+                            "type": "http",
+                            "url": "https://mcp.cloudflare.com/mcp",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.hub / "policies").mkdir()
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "cloudflare": {
+                                "hub": {
+                                    "skills": [],
+                                    "mcp": ["cloudflare-local"],
+                                },
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["memory"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_manifest = self.write_cursor_plugin(
+            {
+                "cloudflare-docs": {
+                    "type": "http",
+                    "url": "https://docs.mcp.cloudflare.com/mcp",
+                }
+            }
+        )
+
+        first = self.run_agent_sync("mcp")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        cursor_path = self.home / ".cursor" / "mcp.json"
+        first_servers = json.loads(cursor_path.read_text())["mcpServers"]
+        self.assertNotIn("cloudflare-local", first_servers)
+
+        plugin_manifest.parent.rename(self.home / "disabled-memory-plugin")
+        second = self.run_agent_sync("mcp")
+
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        second_servers = json.loads(cursor_path.read_text())["mcpServers"]
+        self.assertIn("cloudflare-local", second_servers)
+
     def test_second_mcp_sync_keeps_semantically_matching_claude_config(self):
         first = self.run_agent_sync("mcp")
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)

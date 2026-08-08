@@ -21,6 +21,15 @@ except ModuleNotFoundError:
 CODEX_TABLE_RE = re.compile(
     r"^\s*\[mcp_servers\.([^\.\]\s]+)(?:\.(?:env|headers|http_headers))?\]\s*$"
 )
+SATISFIED_MCP_STATES = frozenset(
+    {
+        "hub-managed",
+        "plugin-owned",
+        "target-owned",
+        "excluded",
+        "disabled-by-policy",
+    }
+)
 
 
 def _read_json(path: Path, bucket: str) -> tuple[dict[str, Any], bool]:
@@ -327,11 +336,27 @@ def resolve_mcp_coverage(
             by_name.setdefault(name.casefold(), []).append((name, config))
 
     resolution = resolve_target_policy(target, home, hub)
+    capability_by_mcp = {
+        name.casefold(): decision
+        for decision in resolution.capabilities.values()
+        for name in decision.suppressed_mcp
+    }
     coverage: dict[str, dict[str, str]] = {}
     for name, canonical in shared.items():
         if not isinstance(name, str) or not isinstance(canonical, dict):
             continue
         key = name.casefold()
+        capability = capability_by_mcp.get(key)
+        if capability is not None and capability.state in {
+            "owner-missing",
+            "disabled-by-policy",
+            "target-owned",
+        }:
+            coverage[name] = {
+                "state": capability.state,
+                "owner": capability.desired_owner,
+            }
+            continue
         owner = resolution.mcp_owners.get(key)
         if key in resolution.suppressed_mcp:
             state = "excluded" if owner == "excluded" else "plugin-owned"

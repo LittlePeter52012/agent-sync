@@ -395,6 +395,64 @@ class ConfigInventoryTests(unittest.TestCase):
         self.assertEqual(coverage["shared"]["state"], "missing")
         self.assertEqual(coverage["shared"]["owner"], "hub-managed")
 
+    def test_explicit_missing_plugin_is_not_reported_as_plugin_owned(self):
+        (self.hub / "policies").mkdir()
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["official"],
+                                        "selection": "plugin:official",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        module = load_inventory_module()
+        coverage = module.resolve_mcp_coverage("cursor", self.home, self.hub)
+
+        self.assertEqual(coverage["shared"]["state"], "owner-missing")
+        self.assertEqual(coverage["shared"]["owner"], "plugin:official")
+
+    def test_explicit_disabled_capability_is_not_reported_missing(self):
+        (self.hub / "policies").mkdir()
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {
+                                    "cursor": {"selection": "disabled"}
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        module = load_inventory_module()
+        coverage = module.resolve_mcp_coverage("cursor", self.home, self.hub)
+
+        self.assertEqual(
+            coverage["shared"]["state"],
+            "disabled-by-policy",
+        )
+        self.assertEqual(coverage["shared"]["owner"], "disabled")
+
     def test_sources_and_trace_entrypoints_emit_safe_json(self):
         cursor = self.home / ".cursor"
         cursor.mkdir(parents=True)

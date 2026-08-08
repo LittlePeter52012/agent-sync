@@ -34,7 +34,7 @@ from pathlib import Path
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
 from capability_resolver import resolve_target_policy
-from config_inventory import resolve_mcp_coverage
+from config_inventory import SATISFIED_MCP_STATES, resolve_mcp_coverage
 from sync_hermes import is_registered as hermes_skills_registered
 
 manifest = (hub / "manifest.yaml").read_text()
@@ -126,10 +126,12 @@ if shared:
         "OpenCode": "opencode",
         "Codex": "codex",
     }
-    accepted = {"hub-managed", "plugin-owned", "excluded"}
     for name, target in mcp_targets.items():
         coverage = resolve_mcp_coverage(target, Path.home(), hub)
-        have = sum(value["state"] in accepted for value in coverage.values())
+        have = sum(
+            value["state"] in SATISFIED_MCP_STATES
+            for value in coverage.values()
+        )
         print(f"{name:<20} {'—':<10} {'—':<10} {have}/{len(coverage)}")
 PY
 

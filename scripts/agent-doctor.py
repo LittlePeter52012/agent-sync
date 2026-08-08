@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from capability_resolver import active_plugin_sources, resolve_target_policy
 from config_inventory import (
+    SATISFIED_MCP_STATES,
     collect_inventory,
     read_canonical_shared_mcp,
     resolve_mcp_coverage,
@@ -1367,13 +1368,12 @@ def vscode_profiles(
             HUB,
             shared=shared_config,
         )
-        accepted = {"hub-managed", "plugin-owned", "excluded"}
         profiles.append(
             {
                 "id": profile.name,
                 "mcp": {
                     "configured": sum(
-                        value["state"] in accepted
+                        value["state"] in SATISFIED_MCP_STATES
                         for value in coverage.values()
                     ),
                     "expected": len(coverage),
@@ -1423,7 +1423,6 @@ def target_records(
         ("Agents", "", "agents", "agents", HOME / ".agents", HOME / ".agents" / "skills", "none", ()),
     ]
     records: list[dict[str, Any]] = []
-    accepted = {"hub-managed", "plugin-owned", "excluded"}
     for name, command, skill_target_key, mcp_target_key, config, skill_dir, kind, apps in targets:
         config_present = config.exists()
         skill_count, managed_skill_count = effective_skill_counts(
@@ -1451,7 +1450,7 @@ def target_records(
             "mcp": (
                 {
                     "configured": sum(
-                        value["state"] in accepted
+                        value["state"] in SATISFIED_MCP_STATES
                         for value in coverage.values()
                     ),
                     "expected": len(coverage),
@@ -1601,7 +1600,15 @@ def effective_mcp_findings(
     agents: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
-    accepted = {"hub-managed", "plugin-owned", "excluded"}
+    accepted = {
+        "hub-managed",
+        "plugin-owned",
+        "target-owned",
+        "excluded",
+        "disabled-by-policy",
+        "ownership-conflict",
+        "owner-missing",
+    }
     records = target_records([], read_shared_mcp()) if agents is None else agents
     for record in records:
         for name, ownership in record.get("mcp_ownership", {}).items():
@@ -1619,6 +1626,46 @@ def effective_mcp_findings(
     return findings
 
 
+def capability_ownership_findings() -> list[dict[str, str]]:
+    targets = (
+        ("Codex / ChatGPT", "codex"),
+        ("Claude", "claude"),
+        ("Cursor", "cursor"),
+        ("Gemini CLI", "gemini"),
+        ("Gemini global", "gemini-global"),
+        ("Antigravity App", "antigravity-app"),
+        ("Antigravity CLI", "antigravity-cli"),
+        ("Antigravity IDE", "antigravity-ide"),
+        ("OpenCode", "opencode"),
+        ("Copilot / VS Code", "vscode"),
+    )
+    findings: list[dict[str, str]] = []
+    for label, target in targets:
+        resolution = resolve_target_policy(target, HOME, HUB)
+        for message in resolution.findings:
+            findings.append(
+                make_finding(
+                    f"Invalid capability ownership policy for {label}: {message}",
+                    scope="policy",
+                    owner="hub",
+                )
+            )
+        for decision in resolution.capabilities.values():
+            if decision.state not in {"ownership-conflict", "owner-missing"}:
+                continue
+            findings.append(
+                make_finding(
+                    (
+                        f"{label} capability {decision.capability} is "
+                        f"{decision.state}: {decision.reason}."
+                    ),
+                    scope="managed",
+                    owner="hub",
+                )
+            )
+    return findings
+
+
 def build_report(runtime: bool = False) -> dict[str, Any]:
     skills = read_manifest_skills()
     shared_config, shared_issue = read_canonical_shared_mcp(HUB)
@@ -1632,6 +1679,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
         + configured_mcp_findings(shared_config)
         + sensitive_config_findings()
         + effective_mcp_findings(agents)
+        + capability_ownership_findings()
         + plugin_scope_findings()
         + codex_orchestration_findings()
         + skill_dependency_findings()
