@@ -356,15 +356,12 @@ PY
         done
         if $dry_run; then
             echo "━━━ agent-sync fix (dry run) ━━━"
-            echo "  would sync skills from the hub whitelist"
-            echo "  would register shared Skills with Hermes when configured"
-            echo "  would sync missing shared MCP entries without replacing local overrides"
-            echo "  would deduplicate synced rules and inject one managed copy"
+            report=$(python3 "$SCRIPTS/agent-doctor.py" --json)
+            printf '%s\n' "$report" | python3 "$SCRIPTS/fix-preview.py"
             python3 "$SCRIPTS/reconcile-codex-orchestration.py" --dry-run || {
                 rc=$?
                 [ "$rc" -eq 2 ] || exit "$rc"
             }
-            echo "  would run agent-sync doctor"
             exit 0
         fi
         echo "━━━ agent-sync fix ━━━"

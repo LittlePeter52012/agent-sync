@@ -29,6 +29,7 @@ echo ""
 echo "── 各工具覆盖矩阵 ──"
 "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
 import json, os, sys
+from functools import lru_cache
 from pathlib import Path
 
 hub = Path(sys.argv[1])
@@ -78,6 +79,7 @@ if (
 ):
     skill_targets["Hermes"] = ("agents", Path.home()/".agents/skills")
 
+@lru_cache(maxsize=None)
 def suppressed_skills(target: str) -> set[str]:
     return set(resolve_target_policy(target, Path.home(), hub).suppressed_skills)
 

@@ -36,15 +36,19 @@ echo "[skills]"
 if [ "$SKILL_COUNT" -eq 0 ]; then
     echo "  (no shared Skills — skip)"
 else
+    SUPPRESSED_ROOT=$(mktemp -d)
+    trap 'rm -rf "$SUPPRESSED_ROOT"' EXIT
+    while IFS='|' read -r target_key target_label base; do
+        "$PY" "$SCRIPT_DIR/capability_resolver.py" \
+            --home "$HOME" \
+            --hub "$HUB_ROOT" \
+            suppressed-skills "$target_key" \
+            > "$SUPPRESSED_ROOT/${target_key//:/_}"
+    done < <(skill_target_specs)
     for skill in "${SKILLS[@]}"; do
         check "$skill @ hub" test -f "$HUB_ROOT/skills/$skill/SKILL.md"
         while IFS='|' read -r target_key target_label base; do
-            suppressed=$(
-                "$PY" "$SCRIPT_DIR/capability_resolver.py" \
-                    --home "$HOME" \
-                    --hub "$HUB_ROOT" \
-                    suppressed-skills "$target_key"
-            )
+            suppressed=$(cat "$SUPPRESSED_ROOT/${target_key//:/_}")
             if printf '%s\n' "$suppressed" | grep -Fqx "$skill"; then
                 if skill_is_hub_managed \
                     "$base/$skill" \

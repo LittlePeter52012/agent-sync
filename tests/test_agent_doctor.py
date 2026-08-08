@@ -741,8 +741,9 @@ class AgentDoctorTests(unittest.TestCase):
             check=True,
         )
 
-        self.assertIn("sync skills", result.stdout)
-        self.assertIn("deduplicate synced rules", result.stdout)
+        self.assertIn("Repair candidate:", result.stdout)
+        self.assertIn("Codex", result.stdout)
+        self.assertNotIn("would sync missing shared MCP", result.stdout)
         self.assertEqual(target.read_text(), before)
 
     def test_claude_mcp_sync_resolves_shared_placeholder_from_donors(self):
