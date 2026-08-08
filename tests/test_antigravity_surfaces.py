@@ -76,6 +76,36 @@ class AntigravitySurfaceTests(unittest.TestCase):
                 (self.hub / "skills" / "shared-skill").resolve(),
             )
 
+    def test_skill_sync_rejects_invalid_capability_policy_before_writes(self):
+        policies = self.hub / "policies"
+        policies.mkdir()
+        (policies / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "invalid": {
+                                "hub": {"skills": ["not-in-hub"], "mcp": []},
+                                "targets": {"cursor": {"selection": "auto"}},
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["bash", str(SYNC_SKILLS)],
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown Hub Skill", result.stderr)
+        self.assertFalse((self.home / ".cursor" / "skills").exists())
+
     def test_cursor_plugin_owns_duplicate_skill_and_hub_link_is_restored(self):
         policies = self.hub / "policies"
         policies.mkdir()

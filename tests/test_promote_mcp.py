@@ -991,6 +991,32 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("shared", cursor)
         self.assertIn("retire-me", cursor)
 
+    def test_mcp_sync_rejects_invalid_capability_policy_before_writes(self):
+        policies = self.hub / "policies"
+        policies.mkdir()
+        (policies / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "invalid": {
+                                "hub": {"skills": [], "mcp": ["not-in-hub"]},
+                                "targets": {"cursor": {"selection": "auto"}},
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        gemini = self.home / ".gemini" / "settings.json"
+
+        result = self.run_agent_sync("mcp")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown Hub MCP", result.stderr)
+        self.assertFalse(gemini.exists())
+
     def test_sync_uses_cursor_plugin_for_shared_mcp(self):
         self.write_cursor_plugin(
             {"shared": {"command": "old-command", "args": ["--old"]}}

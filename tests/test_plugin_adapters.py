@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import scripts.plugin_adapters as plugin_adapters
-from scripts.plugin_adapters import discover_plugins
+from scripts.plugin_adapters import discover_plugins, normalize_plugin_id
 
 
 class PluginAdapterTests(unittest.TestCase):
@@ -98,6 +98,35 @@ class PluginAdapterTests(unittest.TestCase):
         self.assertEqual([source.plugin_id for source in result.sources], ["sample"])
         self.assertEqual(result.sources[0].evidence, "claude-cli")
         self.assertEqual(result.uncertain, ())
+
+    def test_codex_rejects_mismatched_marketplace_metadata(self):
+        root = self.manifest(self.home / "codex-plugin")
+
+        def runner(command, **kwargs):
+            return self.completed(
+                command,
+                {
+                    "installed": [
+                        {
+                            "pluginId": "sample@reviewed-market",
+                            "marketplaceName": "different-market",
+                            "installed": True,
+                            "enabled": True,
+                            "source": {"path": str(root)},
+                        }
+                    ]
+                },
+            )
+
+        result = discover_plugins(
+            "codex",
+            self.home,
+            frozenset({"sample@reviewed-market"}),
+            runner=runner,
+        )
+
+        self.assertEqual(result.sources, ())
+        self.assertIn("codex:plugin-state-uncertain", result.uncertain)
 
     def test_claude_ignores_disabled_plugin(self):
         root = self.manifest(self.home / "claude-plugin")
@@ -213,6 +242,14 @@ class PluginAdapterTests(unittest.TestCase):
             [source.plugin_id for source in result.sources], ["@scope/sample"]
         )
 
+    def test_marketplace_identity_is_not_mistaken_for_a_version_suffix(self):
+        self.assertEqual(
+            normalize_plugin_id("cloudflare@openai-curated-remote"),
+            "cloudflare@openai-curated-remote",
+        )
+        self.assertEqual(normalize_plugin_id("sample@latest"), "sample")
+        self.assertEqual(normalize_plugin_id("sample@1.2.3"), "sample")
+
     def test_opencode_ignores_provider_and_secret_bearing_mcp_fields(self):
         sentinel = "DO-NOT-READ-THIS-SECRET"
         config = self.home / ".config" / "opencode" / "opencode.json"
@@ -232,6 +269,19 @@ class PluginAdapterTests(unittest.TestCase):
 
         self.assertNotIn(sentinel, repr(result))
         self.assertEqual([source.plugin_id for source in result.sources], ["sample"])
+
+    def test_opencode_config_root_is_not_treated_as_plugin_manifest(self):
+        config = self.home / ".config" / "opencode" / "opencode.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"plugin": ["sample@latest"]}), encoding="utf-8")
+        shared = config.parent / "skills" / "shared-skill"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text("# Shared\n", encoding="utf-8")
+
+        result = discover_plugins("opencode", self.home, frozenset({"sample"}))
+
+        self.assertEqual(result.sources[0].skills, frozenset())
+        self.assertEqual(result.sources[0].mcp_servers, {})
 
     def test_opencode_malformed_config_is_uncertain(self):
         config = self.home / ".config" / "opencode" / "opencode.json"
@@ -282,6 +332,18 @@ class PluginAdapterTests(unittest.TestCase):
         )
         self.assertEqual(result.sources, ())
 
+    def test_antigravity_declared_plugin_with_malformed_manifest_is_uncertain(self):
+        root = self.home / ".gemini" / "antigravity" / "plugins" / "sample"
+        root.mkdir(parents=True)
+        (root / "plugin.json").write_text("{", encoding="utf-8")
+
+        result = discover_plugins(
+            "antigravity-app", self.home, frozenset({"sample"})
+        )
+
+        self.assertEqual(result.sources, ())
+        self.assertIn("antigravity-app:plugin-state-uncertain", result.uncertain)
+
     def test_vscode_excludes_declared_disabled_extension(self):
         db = (
             self.home
@@ -304,9 +366,33 @@ class PluginAdapterTests(unittest.TestCase):
             / "Library/Application Support/Code/User/profiles/research/globalStorage/state.vscdb"
         )
         self.disabled_db(profile_db, ["vendor.sample"])
+        storage = (
+            self.home
+            / "Library/Application Support/Code/User/globalStorage/storage.json"
+        )
+        storage.parent.mkdir(parents=True, exist_ok=True)
+        storage.write_text(
+            json.dumps(
+                {
+                    "userDataProfiles": [
+                        {"name": "Research Profile", "location": "research"}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
 
         def runner(command, **kwargs):
-            self.assertIn("research", command)
+            self.assertEqual(
+                command,
+                [
+                    "code",
+                    "--profile",
+                    "Research Profile",
+                    "--list-extensions",
+                    "--show-versions",
+                ],
+            )
             return self.completed(command, "vendor.sample@1.2.3\n")
 
         result = discover_plugins(
@@ -323,6 +409,48 @@ class PluginAdapterTests(unittest.TestCase):
         )
 
         self.assertTrue(any("missing" in item for item in result.uncertain))
+
+    def test_vscode_profile_without_id_to_name_mapping_is_uncertain_and_read_only(self):
+        profile = (
+            self.home
+            / "Library/Application Support/Code/User/profiles/research"
+        )
+        profile.mkdir(parents=True)
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            raise AssertionError("must not invoke a profile name guessed from its id")
+
+        result = discover_plugins(
+            "vscode:research",
+            self.home,
+            frozenset({"vendor.sample"}),
+            runner=runner,
+        )
+
+        self.assertEqual(result.sources, ())
+        self.assertTrue(any("research" in item for item in result.uncertain))
+        self.assertEqual(calls, [])
+
+    def test_vscode_user_root_mcp_is_not_attributed_to_each_extension(self):
+        user_root = self.home / "Library/Application Support/Code/User"
+        db = user_root / "globalStorage/state.vscdb"
+        self.disabled_db(db, [])
+        (user_root / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"shared": {"command": "shared"}}}),
+            encoding="utf-8",
+        )
+
+        def runner(command, **kwargs):
+            return self.completed(command, "vendor.sample@1.2.3\n")
+
+        result = discover_plugins(
+            "vscode", self.home, frozenset({"vendor.sample"}), runner=runner
+        )
+
+        self.assertEqual(result.sources[0].skills, frozenset())
+        self.assertEqual(result.sources[0].mcp_servers, {})
 
     def test_antigravity_ide_uses_its_own_cli_and_state_database(self):
         db = (

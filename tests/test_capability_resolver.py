@@ -125,6 +125,7 @@ class CapabilityResolverTests(unittest.TestCase):
         plugin_id: str = "cloudflare",
         skills: list[str] | None = None,
         mcp: list[str] | None = None,
+        target_providers: list[str] | None = None,
     ) -> None:
         (self.hub / "policies" / "tool-scopes.json").write_text(
             json.dumps(
@@ -141,6 +142,7 @@ class CapabilityResolverTests(unittest.TestCase):
                                     "cursor": {
                                         "official_plugins": [plugin_id],
                                         "selection": selection,
+                                        "target_providers": target_providers or [],
                                     }
                                 },
                             }
@@ -233,6 +235,58 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertEqual([source.plugin_id for source in sources], ["enabled@market"])
         self.assertEqual(sources[0].skills, frozenset({"shared-skill"}))
         self.assertEqual(sources[0].evidence, "codex-cli")
+
+    def test_codex_does_not_accept_a_different_marketplace_as_official(self):
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "cloudflare": {
+                                "hub": {
+                                    "skills": ["cloudflare"],
+                                    "mcp": ["cloudflare-local"],
+                                },
+                                "targets": {
+                                    "codex": {
+                                        "official_plugins": [
+                                            "cloudflare@openai-curated-remote"
+                                        ],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        root = self.root / "codex-plugin"
+        root.mkdir()
+        payload = {
+            "installed": [
+                {
+                    "pluginId": "cloudflare@unreviewed-market",
+                    "installed": True,
+                    "enabled": True,
+                    "source": {"path": str(root)},
+                }
+            ]
+        }
+
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        resolution = resolve_target_policy(
+            "codex", self.home, self.hub, runner=runner
+        )
+
+        self.assertEqual(
+            resolution.capabilities["cloudflare"].state, "hub-managed"
+        )
+        self.assertEqual(resolution.suppressed_skills, frozenset())
+        self.assertEqual(resolution.suppressed_mcp, frozenset())
 
     def test_mcp_identity_normalizes_url_and_stdio_shape(self):
         self.assertEqual(
@@ -433,6 +487,48 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertEqual(decision.effective_owner, "hub")
         self.assertEqual(decision.fallback_owner, "hub")
 
+    def test_auto_reports_conflict_when_multiple_reviewed_plugins_are_active(self):
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "cloudflare": {
+                                "hub": {
+                                    "skills": ["cloudflare"],
+                                    "mcp": ["cloudflare-local"],
+                                },
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["first", "second"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        for plugin_id in ("first", "second"):
+            root = self.home / ".cursor" / "plugins" / "local" / plugin_id
+            skill = root / "skills" / "cloudflare"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("# Cloudflare\n", encoding="utf-8")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "ownership-conflict")
+        self.assertIsNone(decision.effective_owner)
+        self.assertEqual(
+            resolution.suppressed_skills, frozenset({"cloudflare"})
+        )
+        self.assertEqual(
+            resolution.suppressed_mcp, frozenset({"cloudflare-local"})
+        )
+
     def test_explicit_hub_reports_active_plugin_conflict_without_suppression(self):
         self.write_capability_policy(selection="hub")
         self.cursor_plugin(
@@ -456,6 +552,33 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertEqual(decision.state, "ownership-conflict")
         self.assertEqual(decision.desired_owner, "hub")
         self.assertEqual(decision.effective_owner, "hub")
+
+    def test_new_explicit_hub_selection_overrides_legacy_marketplace_preference(self):
+        self.write_capability_policy(selection="hub")
+        policy_path = self.hub / "policies" / "tool-scopes.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["plugins"] = {
+            "cursor": {
+                "prefer_marketplace": {
+                    "cloudflare": {
+                        "skills": ["cloudflare"],
+                        "mcp": ["cloudflare-local"],
+                    }
+                }
+            }
+        }
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        self.cursor_plugin("cloudflare", "abc", skill="cloudflare", servers={})
+        self.enable_cursor_plugin("cloudflare", "abc")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(resolution.suppressed_skills, frozenset())
+        self.assertEqual(resolution.suppressed_mcp, frozenset())
+        self.assertEqual(
+            resolution.capabilities["cloudflare"].state,
+            "ownership-conflict",
+        )
 
     def test_explicit_plugin_missing_does_not_silently_fall_back_to_hub(self):
         self.write_capability_policy(selection="plugin:cloudflare")
@@ -506,7 +629,10 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertEqual(decision.effective_owner, "plugin:cloudflare")
 
     def test_explicit_target_provider_suppresses_hub_bundle(self):
-        self.write_capability_policy(selection="target:cursor-native")
+        self.write_capability_policy(
+            selection="target:cursor-native",
+            target_providers=["cursor-native"],
+        )
 
         resolution = resolve_target_policy("cursor", self.home, self.hub)
 
@@ -521,7 +647,10 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertEqual(decision.effective_owner, "target:cursor-native")
 
     def test_explicit_target_provider_reports_active_official_plugin_conflict(self):
-        self.write_capability_policy(selection="target:cursor-native")
+        self.write_capability_policy(
+            selection="target:cursor-native",
+            target_providers=["cursor-native"],
+        )
         self.cursor_plugin("cloudflare", "abc", skill="cloudflare", servers={})
         self.enable_cursor_plugin("cloudflare", "abc")
 
@@ -531,6 +660,20 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertEqual(decision.state, "ownership-conflict")
         self.assertEqual(decision.desired_owner, "target:cursor-native")
         self.assertEqual(decision.effective_owner, "target:cursor-native")
+
+    def test_unlisted_target_provider_is_owner_missing(self):
+        self.write_capability_policy(selection="target:not-reviewed")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "owner-missing")
+        self.assertIsNone(decision.effective_owner)
+        self.assertIn("not declared", decision.reason)
+        self.assertIn(
+            "cloudflare: target provider not-reviewed is not declared",
+            resolution.findings,
+        )
 
     def test_unknown_hub_component_is_reported_without_suppression(self):
         self.write_capability_policy(mcp=["not-in-hub"])
@@ -580,6 +723,21 @@ class CapabilityResolverTests(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
+        storage = (
+            self.home
+            / "Library/Application Support/Code/User/globalStorage/storage.json"
+        )
+        storage.parent.mkdir(parents=True, exist_ok=True)
+        storage.write_text(
+            json.dumps(
+                {
+                    "userDataProfiles": [
+                        {"name": "Research Profile", "location": "research"}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
 
         def runner(command, **kwargs):
             self.assertEqual(
@@ -587,7 +745,7 @@ class CapabilityResolverTests(unittest.TestCase):
                 [
                     "code",
                     "--profile",
-                    "research",
+                    "Research Profile",
                     "--list-extensions",
                     "--show-versions",
                 ],

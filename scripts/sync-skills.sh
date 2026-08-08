@@ -123,6 +123,14 @@ if [ "${#SKILLS[@]}" -eq 0 ]; then
     exit 0
 fi
 
+"$PY" "$SCRIPT_DIR/capability_resolver.py" \
+    --home "$HOME" \
+    --hub "$HUB_ROOT" \
+    validate
+
+SUPPRESSED_ROOT=$(mktemp -d)
+trap 'rm -rf "$SUPPRESSED_ROOT"' EXIT
+
 echo "━━━ agent-sync skills ($METHOD) ━━━"
 echo "  Hub: $SOURCE_DIR"
 [ "$DRY_RUN" = true ] && echo "  [DRY RUN]"
@@ -132,8 +140,7 @@ while IFS='|' read -r target_key target_label target_dir; do
     [ -n "$target_dir" ] || continue
     log "→ $target_dir"
     mkdir -p "$target_dir"
-    suppressed_file=$(mktemp)
-    trap 'rm -f "$suppressed_file"' EXIT
+    suppressed_file="$SUPPRESSED_ROOT/${target_key//:/_}"
     "$PY" "$SCRIPT_DIR/capability_resolver.py" \
         --home "$HOME" \
         --hub "$HUB_ROOT" \
@@ -147,8 +154,6 @@ while IFS='|' read -r target_key target_label target_dir; do
             link_skill "$skill" "$target_dir"
         fi
     done
-    rm -f "$suppressed_file"
-    trap - EXIT
     echo ""
 done < <(skill_target_specs)
 
@@ -156,12 +161,8 @@ log "Verification:"
 for skill in "${SKILLS[@]}"; do
     printf "  %-35s" "$skill"
     while IFS='|' read -r target_key target_label target_dir; do
-        suppressed=$(
-            "$PY" "$SCRIPT_DIR/capability_resolver.py" \
-                --home "$HOME" \
-                --hub "$HUB_ROOT" \
-                suppressed-skills "$target_key"
-        )
+        suppressed_file="$SUPPRESSED_ROOT/${target_key//:/_}"
+        suppressed=$(cat "$suppressed_file")
         if printf '%s\n' "$suppressed" | grep -Fqx "$skill"; then
             printf " 🧩"
         elif skill_present "$target_dir/$skill"; then

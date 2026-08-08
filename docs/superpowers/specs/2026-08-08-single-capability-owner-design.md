@@ -92,7 +92,7 @@ Observability MCP 服务属于同一个官方能力包，而不是四个相互�
 - `hub`：明确要求 Hub；如果仍有等价的官方插件处于启用状态，则报告冲突；
 - `plugin:<plugin-id>`：明确要求指定产品插件，并屏蔽已映射的 Hub 替代项；
 - `target:<provider-id>`：明确要求目标工具专用的本地或远端提供方，并屏蔽
-  已映射的其他来源；
+  已映射的其他来源；该 provider 必须先列入目标的 `target_providers` 白名单；
 - `disabled`：明确保持该能力不可用。
 
 `agent-sync` 可以修改和协调 Hub 所有的文件与配置，但不得静默安装、启用、
@@ -119,6 +119,7 @@ Observability MCP 服务属于同一个官方能力包，而不是四个相互�
         "targets": {
           "cursor": {
             "official_plugins": ["cloudflare"],
+            "target_providers": [],
             "selection": "auto"
           },
           "codex": {
@@ -163,6 +164,11 @@ Observability MCP 服务属于同一个官方能力包，而不是四个相互�
 只有在测试样例覆盖启用、禁用、陈旧缓存、配置文件切换和损坏状态之后，才
 启用相应适配器。不支持或无法确定的插件状态必须保留 Hub 后备能力，并报告
 `plugin-state-uncertain`；不得删除唯一已知可用的能力。
+
+VS Code Profile 必须先通过产品状态把内部目录 ID 唯一映射到用户可见的
+Profile 名称；映射缺失或歧义时不得调用一个猜测出来的 Profile。Codex 插件
+ID 中的 marketplace 身份必须与产品返回的 `marketplaceName` 一致，不能把
+不同市场的同名插件折叠为同一个已审核身份。
 
 ## 解析算法
 
@@ -314,4 +320,3 @@ Hub 后备能力。禁用 Cursor 插件并重新同步后，两项 Hub 组件都
 11. 连续运行两次 `agent-sync all`，第二次不得产生额外变更。
 12. 公共仓库和私有 Hub 的隐私、治理测试全部通过，不得写入插件凭据或账号
     状态。
-

@@ -46,6 +46,11 @@ if [ ! -f "$CANONICAL" ]; then
     exit 1
 fi
 
+python3 "$CAPABILITY_RESOLVER" \
+    --home "$HOME" \
+    --hub "$HUB_ROOT" \
+    validate
+
 TARGETS=(
     "gemini|Gemini CLI|$HOME/.gemini/settings.json"
     "gemini-global|Gemini global|$HOME/.gemini/config/mcp_config.json"

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from capability_resolver import active_plugin_sources, resolve_target_policy
+from plugin_adapters import normalize_plugin_id
 from config_inventory import (
     SATISFIED_MCP_STATES,
     collect_inventory,
@@ -383,10 +384,7 @@ def sensitive_config_findings() -> list[dict[str, str]]:
 
 
 def normalize_plugin_spec(value: str) -> str:
-    if value.startswith("@"):
-        marker = value.find("@", 1)
-        return value if marker < 0 else value[:marker]
-    return value.split("@", 1)[0]
+    return normalize_plugin_id(value)
 
 
 def opencode_plugins(declared: frozenset[str]) -> set[str]:
@@ -486,10 +484,14 @@ def plugin_scope_findings() -> list[dict[str, str]]:
             )
             continue
         declared = frozenset(
-            normalize_plugin_spec(plugin)
+            identity
             for key in ("required", "forbidden")
             for plugin in policy.get(key, [])
             if isinstance(plugin, str)
+            for identity in (
+                plugin.casefold(),
+                normalize_plugin_spec(plugin),
+            )
         )
         installed = {
             "opencode": opencode_plugins,

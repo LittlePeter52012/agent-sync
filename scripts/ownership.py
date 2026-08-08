@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from capability_resolver import CapabilityDecision, TargetResolution, resolve_target_policy
+from capability_resolver import CapabilityDecision, resolve_target_policy
 
 
 DEFAULT_TARGETS = (
@@ -41,22 +41,24 @@ def _targets(home: Path) -> list[str]:
 
 def _public_decision(
     decision: CapabilityDecision,
-    resolution: TargetResolution,
 ) -> dict[str, Any]:
     return {
         "capability": decision.capability,
         "target": decision.target,
         "selection": decision.selection,
+        "selection_source": decision.selection_source,
         "desired_owner": decision.desired_owner,
         "effective_owner": decision.effective_owner,
         "state": decision.state,
         "reason": decision.reason,
+        "active_providers": list(decision.active_providers),
+        "active_competitors": list(decision.active_competitors),
         "suppressed_skills": sorted(decision.suppressed_skills),
         "suppressed_mcp": sorted(decision.suppressed_mcp),
         "fallback_owner": decision.fallback_owner,
-        "active_plugin_evidence": sorted(
-            {source.evidence for source in resolution.active_plugins}
-        ),
+        "active_plugin_evidence": list(decision.evidence),
+        "execution_location": decision.execution_location,
+        "data_destination": decision.data_destination,
     }
 
 
@@ -65,7 +67,7 @@ def _target_report(target: str, home: Path, hub: Path) -> dict[str, Any]:
     return {
         "target": target,
         "capabilities": [
-            _public_decision(decision, resolution)
+            _public_decision(decision)
             for _name, decision in sorted(resolution.capabilities.items())
         ],
         "findings": list(resolution.findings),

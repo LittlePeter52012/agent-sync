@@ -1089,6 +1089,15 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertIn("required-plugin", messages)
         self.assertIn("forbidden-plugin@market", messages)
 
+    def test_plugin_scope_normalization_preserves_marketplace_identity(self):
+        module = self.load_doctor_module()
+
+        self.assertEqual(
+            module.normalize_plugin_spec("cloudflare@openai-curated-remote"),
+            "cloudflare@openai-curated-remote",
+        )
+        self.assertEqual(module.normalize_plugin_spec("sample@1.2.3"), "sample")
+
     def test_doctor_reports_capability_ownership_conflict_as_managed(self):
         policy = self.hub / "policies"
         policy.mkdir()

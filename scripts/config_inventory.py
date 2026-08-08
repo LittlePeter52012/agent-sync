@@ -339,7 +339,7 @@ def resolve_mcp_coverage(
     capability_by_mcp = {
         name.casefold(): decision
         for decision in resolution.capabilities.values()
-        for name in decision.suppressed_mcp
+        for name in decision.hub_mcp
     }
     coverage: dict[str, dict[str, str]] = {}
     for name, canonical in shared.items():
@@ -348,6 +348,7 @@ def resolve_mcp_coverage(
         key = name.casefold()
         capability = capability_by_mcp.get(key)
         if capability is not None and capability.state in {
+            "ownership-conflict",
             "owner-missing",
             "disabled-by-policy",
             "target-owned",

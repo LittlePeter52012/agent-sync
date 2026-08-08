@@ -449,6 +449,44 @@ class ConfigInventoryTests(unittest.TestCase):
         self.assertEqual(coverage["shared"]["state"], "owner-missing")
         self.assertEqual(coverage["shared"]["owner"], "plugin:official")
 
+    def test_explicit_hub_conflict_is_consistent_in_mcp_coverage(self):
+        (self.hub / "policies").mkdir()
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["official"],
+                                        "selection": "hub",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin = self.home / ".cursor" / "plugins" / "local" / "official"
+        plugin.mkdir(parents=True)
+        cursor = self.home / ".cursor"
+        (cursor / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"shared": {"command": "/bin/sh"}}}),
+            encoding="utf-8",
+        )
+
+        module = load_inventory_module()
+        coverage = module.resolve_mcp_coverage("cursor", self.home, self.hub)
+
+        self.assertEqual(
+            coverage["shared"],
+            {"state": "ownership-conflict", "owner": "hub"},
+        )
+
     def test_explicit_disabled_capability_is_not_reported_missing(self):
         (self.hub / "policies").mkdir()
         (self.hub / "policies" / "tool-scopes.json").write_text(

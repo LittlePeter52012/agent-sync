@@ -81,6 +81,7 @@ from pathlib import Path
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
 from config_inventory import (
+    SATISFIED_MCP_STATES,
     _source_specs,
     read_canonical_shared_mcp,
     resolve_mcp_coverage,
@@ -93,7 +94,7 @@ if issue:
     raise SystemExit(1)
 
 failures = 0
-accepted = {"hub-managed", "plugin-owned", "excluded"}
+accepted = SATISFIED_MCP_STATES
 for target, label, _path, _bucket in _source_specs(home):
     coverage = resolve_mcp_coverage(target, home, hub, shared=shared)
     count = sum(record["state"] in accepted for record in coverage.values())

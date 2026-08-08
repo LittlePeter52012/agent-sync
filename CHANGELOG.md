@@ -14,6 +14,11 @@
 - Migrate marketplace deduplication from same-name heuristics to reviewed full
   Skill-and-MCP capability bundles, with automatic Hub restoration when an
   automatically selected plugin disappears.
+- Preserve marketplace identity during plugin matching, reject ambiguous
+  Profile and plugin metadata, require allowlisted target-owned providers, and
+  fail invalid ownership policy before synchronization writes.
+- Report selection source, competing providers, evidence category, execution
+  location, and known data destination without exposing credentials or paths.
 
 ## 1.11.0 — 2026-08-01
 

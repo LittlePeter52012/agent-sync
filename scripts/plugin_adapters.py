@@ -28,13 +28,23 @@ class PluginDiscovery:
     uncertain: tuple[str, ...] = ()
 
 
+_VERSION_OR_DIST_TAG = re.compile(
+    r"^(?:v?\d+(?:[._+-][0-9a-z]+)*|"
+    r"latest|next|alpha|beta|canary|dev|nightly|preview|rc)$",
+    re.IGNORECASE,
+)
+
+
 def normalize_plugin_id(value: str) -> str:
-    """Remove a version suffix while preserving scoped package identity."""
+    """Remove package versions without erasing product marketplace identity."""
     normalized = value.strip().casefold()
     if normalized.startswith("@"):
         marker = normalized.rfind("@")
         return normalized if marker == 0 else normalized[:marker]
-    return normalized.split("@", 1)[0]
+    base, marker, suffix = normalized.rpartition("@")
+    if marker and _VERSION_OR_DIST_TAG.fullmatch(suffix):
+        return base
+    return normalized
 
 
 def _safe_json(text: str) -> Any | None:
@@ -100,6 +110,23 @@ def _manifest_source(
         root=root,
         skills=frozenset(skills),
         mcp_servers=servers,
+    )
+
+
+def _empty_source(
+    target: str,
+    plugin_id: str,
+    evidence: str,
+    root: Path,
+) -> PluginSource:
+    """Represent an active mapped plugin when no plugin-specific root is known."""
+    return PluginSource(
+        target=target,
+        plugin_id=plugin_id,
+        evidence=evidence,
+        root=root,
+        skills=frozenset(),
+        mcp_servers={},
     )
 
 
@@ -195,6 +222,15 @@ def _codex(
             continue
         if record.get("installed") is not True or record.get("enabled") is not True:
             continue
+        marketplace = record.get("marketplaceName")
+        package_id, marker, marketplace_id = plugin_id.rpartition("@")
+        if (
+            isinstance(marketplace, str)
+            and marker
+            and package_id
+            and marketplace_id.strip().casefold() != marketplace.strip().casefold()
+        ):
+            return PluginDiscovery(uncertain=("codex:plugin-state-uncertain",))
         source_info = record.get("source", {})
         path = source_info.get("path") if isinstance(source_info, dict) else None
         if not isinstance(path, str) or not Path(path).expanduser().is_dir():
@@ -296,7 +332,7 @@ def _opencode(
             continue
         plugin_id = normalize_plugin_id(value)
         sources.append(
-            _manifest_source(target, plugin_id, "opencode-config", config_path.parent)
+            _empty_source(target, plugin_id, "opencode-config", config_path.parent)
         )
     return PluginDiscovery(tuple(sources))
 
@@ -311,21 +347,33 @@ def _antigravity_manifest_root(
     product = "antigravity" if target == "antigravity-app" else "antigravity-cli"
     root = home / ".gemini" / product / "plugins"
     sources: list[PluginSource] = []
+    uncertain = False
     if not root.is_dir():
         return PluginDiscovery()
     for manifest_path in sorted(root.glob("*/plugin.json")):
         record = _read_json(manifest_path)
         if not isinstance(record, dict):
+            uncertain = uncertain or _declared(
+                manifest_path.parent.name, declared_ids
+            )
             continue
         plugin_id = record.get("name", record.get("id"))
-        if not isinstance(plugin_id, str) or not _declared(plugin_id, declared_ids):
+        if not isinstance(plugin_id, str):
+            uncertain = uncertain or _declared(
+                manifest_path.parent.name, declared_ids
+            )
+            continue
+        if not _declared(plugin_id, declared_ids):
             continue
         if record.get("disabled") is True or record.get("enabled") is False:
             continue
         sources.append(
             _manifest_source(target, plugin_id, f"{target}-manifest", manifest_path.parent)
         )
-    return PluginDiscovery(tuple(sources))
+    return PluginDiscovery(
+        tuple(sources),
+        (f"{target}:plugin-state-uncertain",) if uncertain else (),
+    )
 
 
 def _disabled_extensions(database: Path) -> set[str] | None:
@@ -385,6 +433,25 @@ def _run_extensions(
     return _extension_ids(completed.stdout)
 
 
+def _vscode_profile_name(user_root: Path, profile_id: str) -> str | None:
+    """Resolve a profile directory id to the display name accepted by VS Code."""
+    document = _read_json(user_root / "globalStorage" / "storage.json")
+    if not isinstance(document, dict):
+        return None
+    records = document.get("userDataProfiles")
+    if not isinstance(records, list):
+        return None
+    names = {
+        record.get("name")
+        for record in records
+        if isinstance(record, dict)
+        and record.get("location") == profile_id
+        and isinstance(record.get("name"), str)
+        and record.get("name").strip()
+    }
+    return next(iter(names)) if len(names) == 1 else None
+
+
 def _vscode(
     target: str,
     home: Path,
@@ -400,7 +467,12 @@ def _vscode(
             return PluginDiscovery(
                 uncertain=(f"vscode:{profile}:plugin-state-uncertain",)
             )
-        command.extend(["--profile", profile])
+        profile_name = _vscode_profile_name(user_root, profile)
+        if profile_name is None:
+            return PluginDiscovery(
+                uncertain=(f"vscode:{profile}:plugin-state-uncertain",)
+            )
+        command.extend(["--profile", profile_name])
         database = profile_root / "globalStorage" / "state.vscdb"
     else:
         database = user_root / "globalStorage" / "state.vscdb"
@@ -411,7 +483,7 @@ def _vscode(
     if installed is None or disabled is None:
         return PluginDiscovery(uncertain=(f"{label}:plugin-state-uncertain",))
     sources = tuple(
-        _manifest_source(target, plugin_id, "vscode-cli", user_root)
+        _empty_source(target, plugin_id, "vscode-cli", user_root)
         for plugin_id in sorted(installed - disabled)
         if _declared(plugin_id, declared_ids)
     )
@@ -446,7 +518,7 @@ def _antigravity_ide(
         )
     root = home / ".antigravity-ide" / "extensions"
     sources = tuple(
-        _manifest_source(target, plugin_id, "antigravity-ide-cli", root)
+        _empty_source(target, plugin_id, "antigravity-ide-cli", root)
         for plugin_id in sorted(installed - disabled)
         if _declared(plugin_id, declared_ids)
     )

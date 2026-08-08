@@ -153,7 +153,10 @@ remain available for low-level exclusions. Semantic ownership belongs in
 `capability_ownership.capabilities`, whose target selection can be `auto`,
 `hub`, `plugin:<id>`, `target:<provider>`, or `disabled`. Explicit selection
 wins over auto-detection. Missing explicit owners and simultaneous explicit
-providers are surfaced as errors rather than silently falling back. Use
+providers are surfaced as errors rather than silently falling back. A
+`target:<provider>` selection is valid only when that provider appears in the
+target's `target_providers` allowlist. Invalid policy is rejected before Skill
+or MCP files are changed. Use
 `agent-sync ownership [CAPABILITY] [--target TARGET] [--json]` to inspect the
 decision without exposing credentials or plugin paths.
 
@@ -169,13 +172,15 @@ decision without exposing credentials or plugin paths.
 | AntiGravity App / CLI | 两个产品各自的 `plugin.json`，互不借用 |
 | AntiGravity IDE | 产品自带扩展 CLI 与自己的禁用状态库 |
 | VS Code | `code --list-extensions --show-versions` 与只读禁用状态库 |
-| VS Code Profile | 指定 Profile 自己的扩展清单与状态库，不继承默认 Profile |
+| VS Code Profile | 先把目录 ID 唯一映射为显示名称，再读取该 Profile 自己的扩展清单与状态库 |
 
 未在能力合同中登记的插件 ID 不触发探测。CLI 超时、损坏输出、状态数据库
 错误或 Profile 归属不清时，解析器报告 `plugin-state-uncertain` 并保留 Hub，
-不会根据缓存目录猜测。`agent-sync ownership` 的输出只含所有权与证据类别，
-不含凭据、请求头、插件安装绝对路径或账号信息。本机运行的适配器只说明配置
-判断发生在本机；插件后续调用的数据去向仍由对应产品和云服务决定。
+不会根据缓存目录猜测。多个已审核的等价官方提供方同时启用时，系统报告
+`ownership-conflict`，不会再叠加第三个 Hub 提供方。`agent-sync ownership`
+会给出选择来源、活动提供方、竞争提供方、证据类别、执行位置和已知数据去向，
+但不含凭据、请求头、插件安装绝对路径或账号信息。本机运行的适配器只说明
+配置判断发生在本机；插件后续调用的数据去向仍由对应产品和云服务决定。
 
 ## Two-layer model
 

@@ -54,6 +54,16 @@ class OwnershipCliTests(unittest.TestCase):
                                         "selection": "auto",
                                     }
                                 },
+                                "data_boundary": {
+                                    "hub": {
+                                        "execution_location": "agent-managed",
+                                        "data_destination": "provider-cloud",
+                                    },
+                                    "plugin:cloudflare": {
+                                        "execution_location": "product-plugin",
+                                        "data_destination": "provider-cloud",
+                                    },
+                                },
                             }
                         },
                     }
@@ -129,6 +139,11 @@ class OwnershipCliTests(unittest.TestCase):
         self.assertEqual(payload["suppressed_skills"], ["cloudflare"])
         self.assertEqual(payload["suppressed_mcp"], ["cloudflare-local"])
         self.assertEqual(payload["active_plugin_evidence"], ["cursor-log"])
+        self.assertEqual(payload["selection_source"], "explicit-target")
+        self.assertEqual(payload["active_providers"], ["plugin:cloudflare"])
+        self.assertEqual(payload["active_competitors"], [])
+        self.assertEqual(payload["execution_location"], "product-plugin")
+        self.assertEqual(payload["data_destination"], "provider-cloud")
         self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
         self.assertNotIn(str(self.home), result.stdout)
 
