@@ -117,6 +117,39 @@ class CapabilityResolverTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def write_capability_policy(
+        self,
+        *,
+        selection: str = "auto",
+        plugin_id: str = "cloudflare",
+        skills: list[str] | None = None,
+        mcp: list[str] | None = None,
+    ) -> None:
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "defaults": {"selection": "auto"},
+                        "capabilities": {
+                            "cloudflare": {
+                                "hub": {
+                                    "skills": skills or ["cloudflare"],
+                                    "mcp": mcp or ["cloudflare-local"],
+                                },
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": [plugin_id],
+                                        "selection": selection,
+                                    }
+                                },
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def test_cache_only_cursor_plugin_is_not_active(self):
         self.cursor_plugin("cloudflare", "abc", skill="cloudflare")
 
@@ -359,6 +392,120 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertNotIn("cloudflare", resolution.suppressed_skills)
         self.assertIn("shared-skill", resolution.suppressed_skills)
         self.assertEqual(resolution.skill_owners["shared-skill"], "excluded")
+
+    def test_auto_selects_active_reviewed_plugin_and_suppresses_full_hub_bundle(self):
+        self.write_capability_policy()
+        self.cursor_plugin(
+            "cloudflare",
+            "abc",
+            skill="cloudflare",
+            servers={
+                "cloudflare-docs": {
+                    "type": "http",
+                    "url": "https://docs.mcp.cloudflare.com/mcp",
+                }
+            },
+        )
+        self.enable_cursor_plugin("cloudflare", "abc")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(
+            resolution.suppressed_skills,
+            frozenset({"cloudflare"}),
+        )
+        self.assertEqual(
+            resolution.suppressed_mcp,
+            frozenset({"cloudflare-local"}),
+        )
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "plugin-owned")
+        self.assertEqual(decision.effective_owner, "plugin:cloudflare")
+        self.assertEqual(decision.fallback_owner, "hub")
+
+    def test_auto_restores_hub_when_plugin_disappears(self):
+        self.write_capability_policy()
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(resolution.suppressed_skills, frozenset())
+        self.assertEqual(resolution.suppressed_mcp, frozenset())
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "hub-managed")
+        self.assertEqual(decision.effective_owner, "hub")
+        self.assertEqual(decision.fallback_owner, "hub")
+
+    def test_explicit_hub_reports_active_plugin_conflict_without_suppression(self):
+        self.write_capability_policy(selection="hub")
+        self.cursor_plugin(
+            "cloudflare",
+            "abc",
+            skill="cloudflare",
+            servers={
+                "cloudflare-docs": {
+                    "type": "http",
+                    "url": "https://docs.mcp.cloudflare.com/mcp",
+                }
+            },
+        )
+        self.enable_cursor_plugin("cloudflare", "abc")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(resolution.suppressed_skills, frozenset())
+        self.assertEqual(resolution.suppressed_mcp, frozenset())
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "ownership-conflict")
+        self.assertEqual(decision.desired_owner, "hub")
+        self.assertEqual(decision.effective_owner, "hub")
+
+    def test_explicit_plugin_missing_does_not_silently_fall_back_to_hub(self):
+        self.write_capability_policy(selection="plugin:cloudflare")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(
+            resolution.suppressed_skills,
+            frozenset({"cloudflare"}),
+        )
+        self.assertEqual(
+            resolution.suppressed_mcp,
+            frozenset({"cloudflare-local"}),
+        )
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "owner-missing")
+        self.assertEqual(decision.desired_owner, "plugin:cloudflare")
+        self.assertIsNone(decision.effective_owner)
+
+    def test_disabled_selection_suppresses_declared_hub_bundle(self):
+        self.write_capability_policy(selection="disabled")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(
+            resolution.suppressed_skills,
+            frozenset({"cloudflare"}),
+        )
+        self.assertEqual(
+            resolution.suppressed_mcp,
+            frozenset({"cloudflare-local"}),
+        )
+        self.assertEqual(
+            resolution.capabilities["cloudflare"].state,
+            "disabled-by-policy",
+        )
+
+    def test_unknown_hub_component_is_reported_without_suppression(self):
+        self.write_capability_policy(mcp=["not-in-hub"])
+        self.cursor_plugin("cloudflare", "abc", skill="cloudflare", servers={})
+        self.enable_cursor_plugin("cloudflare", "abc")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertNotIn("not-in-hub", resolution.suppressed_mcp)
+        self.assertTrue(
+            any("not-in-hub" in finding for finding in resolution.findings)
+        )
 
 
 if __name__ == "__main__":
