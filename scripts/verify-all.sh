@@ -24,10 +24,12 @@ echo "  Hub: $HUB_ROOT"
 echo ""
 
 TARGETS_FILE=$(mktemp)
-trap 'rm -f "$TARGETS_FILE"' EXIT
+SKILLS_FILE=$(mktemp)
+trap 'rm -f "$TARGETS_FILE" "$SKILLS_FILE"' EXIT
 skill_target_specs > "$TARGETS_FILE"
+read_skill_list > "$SKILLS_FILE"
 
-if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" "$TARGETS_FILE" <<'PY'
+if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" "$TARGETS_FILE" "$SKILLS_FILE" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -35,8 +37,9 @@ from pathlib import Path
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
 target_file = Path(sys.argv[3])
+skills_file = Path(sys.argv[4])
 
-from capability_resolver import _manifest_skills, resolve_target_policy
+from capability_resolver import resolve_target_policy
 from config_inventory import (
     SATISFIED_MCP_STATES,
     _source_specs,
@@ -45,7 +48,11 @@ from config_inventory import (
 )
 
 home = Path.home()
-skills = _manifest_skills(hub / "manifest.yaml")
+skills = [
+    line.strip().casefold()
+    for line in skills_file.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
 skill_targets = []
 for line in target_file.read_text(encoding="utf-8").splitlines():
     target, label, base = line.split("|", 2)

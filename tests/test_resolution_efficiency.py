@@ -28,7 +28,7 @@ class ResolutionEfficiencyTests(unittest.TestCase):
                     f"# {skill}\n", encoding="utf-8"
                 )
             (hub / "manifest.yaml").write_text(
-                "skills:\n  - alpha\n  - beta\n", encoding="utf-8"
+                "math_skills:\n  - alpha\n  - beta\n", encoding="utf-8"
             )
             (hub / "mcp" / "shared-servers.json").write_text(
                 json.dumps({"mcpServers": {}}), encoding="utf-8"
@@ -96,6 +96,8 @@ class ResolutionEfficiencyTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("alpha @ hub", result.stdout)
+            self.assertIn("beta @ hub", result.stdout)
             calls = log.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(calls), 1, calls)
 
