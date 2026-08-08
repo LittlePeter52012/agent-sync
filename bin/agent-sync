@@ -357,11 +357,15 @@ PY
         if $dry_run; then
             echo "━━━ agent-sync fix (dry run) ━━━"
             report=$(python3 "$SCRIPTS/agent-doctor.py" --json)
-            printf '%s\n' "$report" | python3 "$SCRIPTS/fix-preview.py"
-            python3 "$SCRIPTS/reconcile-codex-orchestration.py" --dry-run || {
-                rc=$?
-                [ "$rc" -eq 2 ] || exit "$rc"
-            }
+            preview_rc=0
+            printf '%s\n' "$report" | python3 "$SCRIPTS/fix-preview.py" || preview_rc=$?
+            [ "$preview_rc" -eq 0 ] || [ "$preview_rc" -eq 2 ] || exit "$preview_rc"
+            reconcile_rc=0
+            python3 "$SCRIPTS/reconcile-codex-orchestration.py" --dry-run || reconcile_rc=$?
+            [ "$reconcile_rc" -eq 0 ] || [ "$reconcile_rc" -eq 2 ] || exit "$reconcile_rc"
+            if [ "$preview_rc" -eq 2 ] || [ "$reconcile_rc" -eq 2 ]; then
+                exit 2
+            fi
             exit 0
         fi
         echo "━━━ agent-sync fix ━━━"

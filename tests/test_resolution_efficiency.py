@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 VERIFY = REPO / "scripts" / "verify-all.sh"
+LIST_SYNC = REPO / "scripts" / "list-sync.sh"
 
 
 class ResolutionEfficiencyTests(unittest.TestCase):
@@ -18,7 +19,7 @@ class ResolutionEfficiencyTests(unittest.TestCase):
             root = Path(directory)
             home = root / "home"
             hub = root / "hub"
-            log = root / "python.log"
+            log = root / "codex.log"
             (hub / "mcp").mkdir(parents=True)
             (hub / "skills" / "alpha").mkdir(parents=True)
             (hub / "skills" / "beta").mkdir(parents=True)
@@ -48,19 +49,42 @@ class ResolutionEfficiencyTests(unittest.TestCase):
                 base.mkdir(parents=True)
                 for skill in ("alpha", "beta"):
                     (base / skill).symlink_to(hub / "skills" / skill)
-            wrapper = root / "python-wrapper"
-            wrapper.write_text(
-                "#!/bin/sh\n"
-                'case "$1" in *capability_resolver.py) printf "call\\n" >> "$PY_LOG" ;; esac\n'
-                'exec python3 "$@"\n',
+            policy = hub / "policies" / "tool-scopes.json"
+            policy.parent.mkdir()
+            policy.write_text(
+                json.dumps(
+                    {
+                        "capability_ownership": {
+                            "defaults": {"selection": "auto"},
+                            "capabilities": {
+                                "search": {
+                                    "hub": {"skills": [], "mcp": []},
+                                    "targets": {
+                                        "codex": {
+                                            "official_plugins": ["exa@market"],
+                                            "selection": "auto",
+                                        }
+                                    },
+                                }
+                            },
+                        }
+                    }
+                ),
                 encoding="utf-8",
             )
-            wrapper.chmod(0o755)
+            codex = root / "codex"
+            codex.write_text(
+                "#!/bin/sh\n"
+                'printf "call\\n" >> "$CODEX_LOG"\n'
+                'printf \'{"installed": []}\\n\'\n',
+                encoding="utf-8",
+            )
+            codex.chmod(0o755)
             env = os.environ | {
                 "HOME": str(home),
                 "AGENT_HUB_ROOT": str(hub),
-                "PYTHON": str(wrapper),
-                "PY_LOG": str(log),
+                "CODEX_LOG": str(log),
+                "PATH": f"{root}:{os.environ.get('PATH', '')}",
             }
 
             result = subprocess.run(
@@ -73,7 +97,19 @@ class ResolutionEfficiencyTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             calls = log.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(calls), len(bases), calls)
+            self.assertEqual(len(calls), 1, calls)
+
+            log.write_text("", encoding="utf-8")
+            status = subprocess.run(
+                ["bash", str(LIST_SYNC)],
+                cwd=REPO,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+            calls = log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), 1, calls)
 
 
 if __name__ == "__main__":

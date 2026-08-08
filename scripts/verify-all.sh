@@ -23,67 +23,20 @@ echo "━━━ agent-sync verify ━━━"
 echo "  Hub: $HUB_ROOT"
 echo ""
 
-SKILLS=()
-SKILL_COUNT=0
-while IFS= read -r s; do
-    if [ -n "$s" ]; then
-        SKILLS+=("$s")
-        SKILL_COUNT=$((SKILL_COUNT + 1))
-    fi
-done < <(read_skill_list)
+TARGETS_FILE=$(mktemp)
+trap 'rm -f "$TARGETS_FILE"' EXIT
+skill_target_specs > "$TARGETS_FILE"
 
-echo "[skills]"
-if [ "$SKILL_COUNT" -eq 0 ]; then
-    echo "  (no shared Skills — skip)"
-else
-    SUPPRESSED_ROOT=$(mktemp -d)
-    trap 'rm -rf "$SUPPRESSED_ROOT"' EXIT
-    while IFS='|' read -r target_key target_label base; do
-        "$PY" "$SCRIPT_DIR/capability_resolver.py" \
-            --home "$HOME" \
-            --hub "$HUB_ROOT" \
-            suppressed-skills "$target_key" \
-            > "$SUPPRESSED_ROOT/${target_key//:/_}"
-    done < <(skill_target_specs)
-    for skill in "${SKILLS[@]}"; do
-        check "$skill @ hub" test -f "$HUB_ROOT/skills/$skill/SKILL.md"
-        while IFS='|' read -r target_key target_label base; do
-            suppressed=$(cat "$SUPPRESSED_ROOT/${target_key//:/_}")
-            if printf '%s\n' "$suppressed" | grep -Fqx "$skill"; then
-                if skill_is_hub_managed \
-                    "$base/$skill" \
-                    "$HUB_ROOT/skills/$skill"; then
-                    echo "  ❌ $skill plugin/policy-owned @ $target_label (duplicate Hub link)"
-                    FAIL=$((FAIL + 1))
-                else
-                    echo "  ✅ $skill plugin/policy-owned @ $target_label"
-                fi
-            else
-                check "$skill Hub-managed @ $base" \
-                    skill_is_hub_managed \
-                    "$base/$skill" \
-                    "$HUB_ROOT/skills/$skill"
-            fi
-        done < <(skill_target_specs)
-    done
-fi
-
-echo ""
-echo "[hermes]"
-if [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ]; then
-    check "Hermes uses ~/.agents/skills" "$PY" "$SCRIPT_DIR/sync_hermes.py" --check
-else
-    echo "  (Hermes not configured — skip)"
-fi
-
-echo ""
-echo "[mcp]"
-if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" <<'PY'
+if "$PY" - "$HUB_ROOT" "$SCRIPT_DIR" "$TARGETS_FILE" <<'PY'
+import os
 import sys
 from pathlib import Path
 
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
+target_file = Path(sys.argv[3])
+
+from capability_resolver import _manifest_skills, resolve_target_policy
 from config_inventory import (
     SATISFIED_MCP_STATES,
     _source_specs,
@@ -92,30 +45,91 @@ from config_inventory import (
 )
 
 home = Path.home()
+skills = _manifest_skills(hub / "manifest.yaml")
+skill_targets = []
+for line in target_file.read_text(encoding="utf-8").splitlines():
+    target, label, base = line.split("|", 2)
+    skill_targets.append((target, label, Path(base)))
+
+resolutions = {}
+
+def resolution(target):
+    if target not in resolutions:
+        resolutions[target] = resolve_target_policy(target, home, hub)
+    return resolutions[target]
+
+def hub_managed(destination, source):
+    return (
+        destination.is_symlink()
+        and os.path.realpath(destination) == os.path.realpath(source)
+    )
+
+failures = 0
+print("[skills]")
+if not skills:
+    print("  (no shared Skills — skip)")
+else:
+    for skill in skills:
+        source = hub / "skills" / skill
+        source_ok = (source / "SKILL.md").is_file()
+        print(f"  {'✅' if source_ok else '❌'} {skill} @ hub")
+        failures += not source_ok
+        for target, label, base in skill_targets:
+            managed = hub_managed(base / skill, source)
+            suppressed = skill in resolution(target).suppressed_skills
+            if suppressed:
+                ok = not managed
+                suffix = " (duplicate Hub link)" if not ok else ""
+                print(
+                    f"  {'✅' if ok else '❌'} {skill} "
+                    f"plugin/policy-owned @ {label}{suffix}"
+                )
+            else:
+                ok = managed
+                print(f"  {'✅' if ok else '❌'} {skill} Hub-managed @ {base}")
+            failures += not ok
+
+print("\n[mcp]")
 shared, issue = read_canonical_shared_mcp(hub)
 if issue:
     print("  ❌ Canonical shared MCP configuration is invalid or unreadable.")
-    raise SystemExit(1)
+    failures += 1
+else:
+    for target, label, _path, _bucket in _source_specs(home):
+        coverage = resolve_mcp_coverage(
+            target,
+            home,
+            hub,
+            shared=shared,
+            resolution=resolution(target),
+        )
+        count = sum(
+            record["state"] in SATISFIED_MCP_STATES
+            for record in coverage.values()
+        )
+        total = len(coverage)
+        ok = count == total
+        print(f"  {'✅' if ok else '❌'} {label} shared MCP {count}/{total}")
+        for name, record in coverage.items():
+            if record["state"] not in SATISFIED_MCP_STATES:
+                print(f"      - {name}: {record['state']}")
+        failures += not ok
 
-failures = 0
-accepted = SATISFIED_MCP_STATES
-for target, label, _path, _bucket in _source_specs(home):
-    coverage = resolve_mcp_coverage(target, home, hub, shared=shared)
-    count = sum(record["state"] in accepted for record in coverage.values())
-    total = len(coverage)
-    marker = "✅" if count == total else "❌"
-    print(f"  {marker} {label} shared MCP {count}/{total}")
-    for name, record in coverage.items():
-        if record["state"] not in accepted:
-            print(f"      - {name}: {record['state']}")
-    failures += count != total
-sys.exit(failures)
+raise SystemExit(failures)
 PY
 then
     :
 else
     rc=$?
     FAIL=$((FAIL + rc))
+fi
+
+echo ""
+echo "[hermes]"
+if [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ]; then
+    check "Hermes uses ~/.agents/skills" "$PY" "$SCRIPT_DIR/sync_hermes.py" --check
+else
+    echo "  (Hermes not configured — skip)"
 fi
 
 echo ""

@@ -44,13 +44,17 @@ def make_finding(
     scope: str,
     owner: str,
     severity: str = "attention",
+    repair: str | None = None,
 ) -> dict[str, str]:
-    return {
+    finding = {
         "severity": severity,
         "message": message,
         "scope": scope,
         "owner": owner,
     }
+    if repair is not None:
+        finding["repair"] = repair
+    return finding
 
 
 def policy_file_findings() -> list[dict[str, str]]:
@@ -271,6 +275,7 @@ def configured_mcp_findings(
                     f"Retired MCP still configured in {record['label']}: {name}",
                     scope="managed",
                     owner="hub",
+                    repair="mcp",
                 )
             )
         for names in record.get("duplicate_names", []):
@@ -655,6 +660,8 @@ def codex_orchestration_findings() -> list[dict[str, str]]:
                         owner="codex",
                     )
                 )
+    for finding in findings:
+        finding["repair"] = "codex-orchestration"
     return findings
 
 
@@ -1579,6 +1586,7 @@ def rule_findings() -> list[dict[str, str]]:
                         f"Missing rule target {target.name}: {rule.name}",
                         scope="managed",
                         owner="hub",
+                        repair="rules",
                     )
                 )
                 continue
@@ -1595,6 +1603,7 @@ def rule_findings() -> list[dict[str, str]]:
                         f"Missing or duplicate synced rule in {target.name}: {rule.name}",
                         scope="managed",
                         owner="hub",
+                        repair="rules",
                     )
                 )
                 continue
@@ -1609,6 +1618,7 @@ def rule_findings() -> list[dict[str, str]]:
                         f"Drifted synced rule in {target.name}: {rule.name}",
                         scope="managed",
                         owner="hub",
+                        repair="rules",
                     )
                 )
     return findings
@@ -1639,6 +1649,7 @@ def effective_mcp_findings(
                         ),
                         scope="managed",
                         owner="hub",
+                        repair="mcp",
                     )
                 )
     return findings
@@ -1760,6 +1771,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
                     f"{agent['name']} skill coverage is incomplete.",
                     scope="managed",
                     owner="hub",
+                    repair="skills",
                 )
             )
         if (
@@ -1783,6 +1795,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
                     f"{agent['name']} shared MCP coverage is incomplete or command-managed.",
                     scope="managed",
                     owner="hub",
+                    repair="mcp",
                 )
             )
         for profile in agent.get("profiles", []):
@@ -1792,6 +1805,7 @@ def build_report(runtime: bool = False) -> dict[str, Any]:
                         f"VS Code profile {profile['id']} shared MCP coverage is incomplete.",
                         scope="managed",
                         owner="hub",
+                        repair="mcp",
                     )
                 )
     return {

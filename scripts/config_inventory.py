@@ -12,10 +12,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from capability_resolver import mcp_identity_matches, resolve_target_policy
+    from capability_resolver import (
+        TargetResolution,
+        mcp_identity_matches,
+        resolve_target_policy,
+    )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from capability_resolver import mcp_identity_matches, resolve_target_policy
+    from capability_resolver import (
+        TargetResolution,
+        mcp_identity_matches,
+        resolve_target_policy,
+    )
 
 
 CODEX_TABLE_RE = re.compile(
@@ -323,6 +331,7 @@ def resolve_mcp_coverage(
     hub: Path,
     *,
     shared: dict[str, Any] | None = None,
+    resolution: TargetResolution | None = None,
 ) -> dict[str, dict[str, str]]:
     """Classify every shared MCP for a target without exposing configuration."""
     if shared is None:
@@ -335,7 +344,8 @@ def resolve_mcp_coverage(
         if isinstance(name, str) and isinstance(config, dict):
             by_name.setdefault(name.casefold(), []).append((name, config))
 
-    resolution = resolve_target_policy(target, home, hub)
+    if resolution is None:
+        resolution = resolve_target_policy(target, home, hub)
     capability_by_mcp = {
         name.casefold(): decision
         for decision in resolution.capabilities.values()

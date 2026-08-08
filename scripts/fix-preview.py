@@ -20,11 +20,7 @@ def render_preview(report: dict[str, Any]) -> str:
         message = finding.get("message")
         if not isinstance(message, str) or not message:
             continue
-        managed = (
-            finding.get("scope") in {"managed", "policy"}
-            or finding.get("owner") == "hub"
-        )
-        prefix = "Repair candidate" if managed else "Manual review"
+        prefix = "Repair candidate" if finding.get("repair") else "Manual review"
         lines.append(f"  - {prefix}: {message}")
     return "\n".join(lines) or "No repair actions required."
 
@@ -39,7 +35,12 @@ def main() -> int:
         print("Invalid Agent Doctor report: root must be an object", file=sys.stderr)
         return 1
     print(render_preview(report))
-    return 0
+    findings = report.get("findings", [])
+    has_repair = isinstance(findings, list) and any(
+        isinstance(item, dict) and bool(item.get("repair"))
+        for item in findings
+    )
+    return 2 if has_repair else 0
 
 
 if __name__ == "__main__":

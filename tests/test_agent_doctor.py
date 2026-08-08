@@ -738,9 +738,9 @@ class AgentDoctorTests(unittest.TestCase):
             env=env,
             text=True,
             capture_output=True,
-            check=True,
         )
 
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("Repair candidate:", result.stdout)
         self.assertIn("Codex", result.stdout)
         self.assertNotIn("would sync missing shared MCP", result.stdout)

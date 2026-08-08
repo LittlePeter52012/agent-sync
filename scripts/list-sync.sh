@@ -80,8 +80,11 @@ if (
     skill_targets["Hermes"] = ("agents", Path.home()/".agents/skills")
 
 @lru_cache(maxsize=None)
+def target_resolution(target: str):
+    return resolve_target_policy(target, Path.home(), hub)
+
 def suppressed_skills(target: str) -> set[str]:
-    return set(resolve_target_policy(target, Path.home(), hub).suppressed_skills)
+    return set(target_resolution(target).suppressed_skills)
 
 def skill_ok(target: str, base: Path) -> str:
     if not skills:
@@ -129,7 +132,12 @@ if shared:
         "Codex": "codex",
     }
     for name, target in mcp_targets.items():
-        coverage = resolve_mcp_coverage(target, Path.home(), hub)
+        coverage = resolve_mcp_coverage(
+            target,
+            Path.home(),
+            hub,
+            resolution=target_resolution(target),
+        )
         have = sum(
             value["state"] in SATISFIED_MCP_STATES
             for value in coverage.values()

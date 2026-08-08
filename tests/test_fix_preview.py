@@ -35,6 +35,7 @@ class FixPreviewTests(unittest.TestCase):
                         "message": "Codex skill coverage is incomplete.",
                         "scope": "managed",
                         "owner": "hub",
+                        "repair": "skills",
                     },
                     {
                         "message": "Claude has a local-only failure.",
@@ -48,6 +49,25 @@ class FixPreviewTests(unittest.TestCase):
         self.assertIn("Repair candidate: Codex skill coverage is incomplete.", output)
         self.assertIn("Manual review: Claude has a local-only failure.", output)
         self.assertNotIn("sync missing shared MCP", output)
+
+    def test_hub_owned_source_error_is_not_claimed_as_automatic(self):
+        output = load_module().render_preview(
+            {
+                "overall": "ATTENTION",
+                "findings": [
+                    {
+                        "message": "Capability ownership policy is invalid.",
+                        "scope": "policy",
+                        "owner": "hub",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            output,
+            "  - Manual review: Capability ownership policy is invalid.",
+        )
 
 
 if __name__ == "__main__":
