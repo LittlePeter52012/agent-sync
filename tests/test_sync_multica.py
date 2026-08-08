@@ -388,6 +388,34 @@ class SyncMulticaTests(unittest.TestCase):
         self.assertIn("0.4.9", result.stderr)
         self.assertEqual(self.calls(), [["--version"]])
 
+    def test_hanging_multica_command_returns_a_bounded_timeout_error(self):
+        hanging = self.bin_dir / "hanging-multica"
+        hanging.write_text(
+            "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n",
+            encoding="utf-8",
+        )
+        hanging.chmod(0o755)
+        env = self.env() | {
+            "MULTICA_BIN": str(hanging),
+            "AGENT_SYNC_MULTICA_TIMEOUT": "0.1",
+        }
+
+        try:
+            result = subprocess.run(
+                ["python3", str(SYNC)],
+                cwd=REPO,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=2,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("Multica synchronization exceeded its bounded timeout")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr.lower())
+        self.assertIn("checking its version", result.stderr.lower())
+
     def test_entrypoint_dispatches_multica_and_rejects_unknown_options(self):
         result = subprocess.run(
             [str(ENTRYPOINT), "multica"],

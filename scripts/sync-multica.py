@@ -219,6 +219,13 @@ def version_tuple(value: str) -> tuple[int, int, int]:
 class MulticaClient:
     def __init__(self, executable: str):
         self.executable = executable
+        raw_timeout = os.environ.get("AGENT_SYNC_MULTICA_TIMEOUT", "60")
+        try:
+            self.timeout = float(raw_timeout)
+        except ValueError as exc:
+            raise SyncError("AGENT_SYNC_MULTICA_TIMEOUT must be a number") from exc
+        if self.timeout <= 0:
+            raise SyncError("AGENT_SYNC_MULTICA_TIMEOUT must be greater than zero")
 
     def _run(self, args: list[str], operation: str) -> subprocess.CompletedProcess[str]:
         try:
@@ -227,7 +234,12 @@ class MulticaClient:
                 text=True,
                 capture_output=True,
                 check=False,
+                timeout=self.timeout,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise SyncError(
+                f"Multica CLI timed out while {operation} after {self.timeout:g} seconds"
+            ) from exc
         except OSError as exc:
             raise SyncError("Multica CLI is not available") from exc
         if result.returncode != 0:

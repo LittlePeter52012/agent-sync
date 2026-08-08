@@ -1,4 +1,6 @@
 import os
+import pty
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -23,11 +25,10 @@ class DeployRemoteTests(unittest.TestCase):
             "#!/bin/sh\n"
             'printf "CALL\\n" >> "$SSH_LOG"\n'
             'case "$*" in\n'
-            '  *"tar -xf -"*) printf "ARCHIVE\\n" >> "$SSH_LOG" ;;\n'
+            '  *"tar -xf -"*) printf "ARCHIVE\\n" >> "$SSH_LOG"; cat >/dev/null ;;\n'
             '  *"bash -s"*) printf "ACTIVATE\\n" >> "$SSH_LOG"; '
             'cat > "$SSH_ACTIVATION_LOG"; exit 0 ;;\n'
             "esac\n"
-            "cat >/dev/null\n"
             'printf "remote preflight ok\\n"\n',
             encoding="utf-8",
         )
@@ -81,6 +82,31 @@ class DeployRemoteTests(unittest.TestCase):
         calls = self.log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(calls.count("CALL"), 1)
         self.assertNotIn("ARCHIVE", calls)
+
+    def test_default_preflight_does_not_wait_for_interactive_stdin(self):
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            ["bash", str(DEPLOY), "mac-mini"],
+            env=self.env,
+            stdin=slave,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        os.close(slave)
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                self.fail("read-only preflight waited for interactive stdin")
+        finally:
+            os.close(master)
+
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertIn("Preflight only", stdout)
 
     def test_apply_streams_committed_archives_and_activation_script(self):
         result = self.run_deploy("mac-mini", "--apply")
