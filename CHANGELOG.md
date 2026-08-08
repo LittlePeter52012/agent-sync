@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.12.0 — 2026-08-08
+
+- Add semantic capability ownership so each Agent uses one provider bundle per
+  capability, with explicit `auto`, `hub`, `plugin:*`, `target:*`, and
+  `disabled` selections.
+- Add `agent-sync ownership` for secret-free ownership explanations and make
+  synchronization, coverage, verification, and Doctor consume the same
+  decisions.
+- Discover only policy-declared plugins through read-only adapters for Cursor,
+  Codex, Claude, Gemini, OpenCode, AntiGravity App/CLI/IDE, and VS Code
+  Profiles; uncertain evidence keeps the Hub fallback.
+- Migrate marketplace deduplication from same-name heuristics to reviewed full
+  Skill-and-MCP capability bundles, with automatic Hub restoration when an
+  automatically selected plugin disappears.
+
 ## 1.11.0 — 2026-08-01
 
 - Add guarded MCP dependency maintenance: `deps check` reports package-registry
