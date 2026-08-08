@@ -108,7 +108,10 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    items = payload if isinstance(payload, list) else [payload]
+    if isinstance(payload, dict) and "targets" in payload:
+        items = payload["targets"]
+    else:
+        items = payload if isinstance(payload, list) else [payload]
     for item in items:
         if "capabilities" in item:
             print(f"目标：{item['target']}")

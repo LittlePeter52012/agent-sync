@@ -158,6 +158,19 @@ class OwnershipCliTests(unittest.TestCase):
             ["cloudflare"],
         )
 
+    def test_ownership_command_renders_all_targets_as_text(self):
+        result = self.run_cli("ownership")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("目标：cursor", result.stdout)
+        self.assertIn(
+            "cloudflare: plugin-owned (plugin:cloudflare, selection=auto)",
+            result.stdout,
+        )
+        self.assertIn("目标：codex", result.stdout)
+        self.assertNotIn("TOKEN_SHOULD_NOT_APPEAR", result.stdout)
+        self.assertNotIn(str(self.home), result.stdout)
+
     def test_ownership_command_rejects_unknown_capability(self):
         result = self.run_cli(
             "ownership",
