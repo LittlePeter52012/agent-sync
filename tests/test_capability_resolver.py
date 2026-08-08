@@ -368,6 +368,16 @@ class CapabilityResolverTests(unittest.TestCase):
                     }
                 }
             },
+            {
+                "capability_ownership": {
+                    "capabilities": {
+                        "cloudflare": {
+                            "hub": {"skills": [], "mcp": []},
+                            "targets": {"Cursor": []},
+                        }
+                    }
+                }
+            },
         )
         for document in malformed_documents:
             with self.subTest(document=document):

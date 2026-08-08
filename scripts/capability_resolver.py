@@ -397,6 +397,16 @@ def resolve_target_policy(
             if not isinstance(raw_targets, dict):
                 findings.append(f"{capability_name}: targets policy is invalid")
                 raw_targets = {}
+            canonical_target_keys: set[str] = set()
+            for raw_target_key, raw_target_policy in raw_targets.items():
+                canonical_target_key = raw_target_key.strip().casefold()
+                if not canonical_target_key or raw_target_key != canonical_target_key:
+                    findings.append(f"{capability_name}: target key is invalid")
+                if canonical_target_key in canonical_target_keys:
+                    findings.append(f"{capability_name}: duplicate target key")
+                canonical_target_keys.add(canonical_target_key)
+                if not isinstance(raw_target_policy, dict):
+                    findings.append(f"{capability_name}: target policy is invalid")
             selected_target_key = (
                 target_name
                 if target_name in raw_targets

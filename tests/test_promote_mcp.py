@@ -1027,7 +1027,7 @@ class PromoteMcpTests(unittest.TestCase):
                         "capabilities": {
                             "shared": {
                                 "hub": {"skills": [], "mcp": ["shared"]},
-                                "targets": {"cursor": []},
+                                "targets": {"Cursor": []},
                             }
                         }
                     }
