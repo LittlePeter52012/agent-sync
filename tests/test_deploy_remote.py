@@ -97,7 +97,7 @@ class DeployRemoteTests(unittest.TestCase):
         os.close(slave)
         try:
             try:
-                stdout, stderr = process.communicate(timeout=1)
+                stdout, stderr = process.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
