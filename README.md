@@ -141,21 +141,41 @@ directories. Shared rules still use the single global
 
 ### Product plugin ownership and duplicate prevention
 
-Product plugins remain owned by their product manager. For Cursor, Agent Sync
-uses the active plugin log plus the declared cache revision, or an explicit
-local-plugin directory; a cache directory by itself is not treated as enabled.
-When an active plugin exposes the same Skill or the same normalized MCP
-transport as the Hub, Agent Sync counts it as `plugin-owned` and removes only
-the duplicate Hub-managed link or entry. The same MCP name with a different
-transport keeps the Hub entry and is reported by Doctor as a local collision;
-an explicit `prefer_marketplace` policy can instead choose the plugin. Plugin
-files and unrelated local capabilities are never modified. If the plugin
-disappears, the next sync restores the Hub capability automatically.
+产品插件仍由各产品自己的插件管理器负责。Agent Sync 只为每个
+`（目标 Agent，能力）` 组合确定一个有效提供方。`auto` 只接受身份已在 Hub
+策略中审核、并且有当前启用证据的官方插件；一旦选中，该插件接管完整能力
+包，目标中的全部映射 Skill 与 MCP 会一起抑制。插件内部拆出的多个端点仍算
+同一个提供方。Agent Sync 不修改插件文件、认证状态和无关本地能力；自动
+选择的插件消失后，下次同步恢复 Hub 能力包。
 
 Target-specific `distribution.exclude_skills` and `exclude_mcp` policy entries
-provide explicit exclusions. Conditional `plugins.<target>.prefer_marketplace`
-entries apply only while that plugin is active, preventing a stale marketplace
-cache from hiding a Hub capability.
+remain available for low-level exclusions. Semantic ownership belongs in
+`capability_ownership.capabilities`, whose target selection can be `auto`,
+`hub`, `plugin:<id>`, `target:<provider>`, or `disabled`. Explicit selection
+wins over auto-detection. Missing explicit owners and simultaneous explicit
+providers are surfaced as errors rather than silently falling back. Use
+`agent-sync ownership [CAPABILITY] [--target TARGET] [--json]` to inspect the
+decision without exposing credentials or plugin paths.
+
+当前只读证据源如下：
+
+| 产品 | 启用证据 |
+|---|---|
+| Cursor | 当前插件日志与对应修订，或显式本地插件目录 |
+| Codex | `codex plugin list --json` |
+| Claude | `claude plugin list --json` |
+| Gemini CLI / global | `gemini extensions list --output-format json` |
+| OpenCode | 用户配置顶层 `plugin` 数组；不读取 provider 与 MCP 密钥字段 |
+| AntiGravity App / CLI | 两个产品各自的 `plugin.json`，互不借用 |
+| AntiGravity IDE | 产品自带扩展 CLI 与自己的禁用状态库 |
+| VS Code | `code --list-extensions --show-versions` 与只读禁用状态库 |
+| VS Code Profile | 指定 Profile 自己的扩展清单与状态库，不继承默认 Profile |
+
+未在能力合同中登记的插件 ID 不触发探测。CLI 超时、损坏输出、状态数据库
+错误或 Profile 归属不清时，解析器报告 `plugin-state-uncertain` 并保留 Hub，
+不会根据缓存目录猜测。`agent-sync ownership` 的输出只含所有权与证据类别，
+不含凭据、请求头、插件安装绝对路径或账号信息。本机运行的适配器只说明配置
+判断发生在本机；插件后续调用的数据去向仍由对应产品和云服务决定。
 
 ## Two-layer model
 

@@ -1,5 +1,8 @@
 # Plugin Marketplace Deduplication and Target Exclusions Design
 
+> 已由 2026-08-08 的《单一能力提供方设计》取代。本文仅保留为历史设计记录；
+> 新实现以 `capability_ownership` 的“目标 Agent × 能力”所有权模型为准。
+
 ## Goal
 
 Prevent `agent-sync` from installing a second copy of a Skill or MCP capability
