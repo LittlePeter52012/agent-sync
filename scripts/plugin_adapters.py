@@ -40,7 +40,9 @@ def normalize_plugin_id(value: str) -> str:
     normalized = value.strip().casefold()
     if normalized.startswith("@"):
         marker = normalized.rfind("@")
-        return normalized if marker == 0 else normalized[:marker]
+        if marker > 0 and _VERSION_OR_DIST_TAG.fullmatch(normalized[marker + 1 :]):
+            return normalized[:marker]
+        return normalized
     base, marker, suffix = normalized.rpartition("@")
     if marker and _VERSION_OR_DIST_TAG.fullmatch(suffix):
         return base
@@ -62,6 +64,12 @@ def _declared(value: str, declared_ids: frozenset[str]) -> bool:
     declared = {item.casefold() for item in declared_ids}
     declared_short = {normalize_plugin_id(item) for item in declared}
     return normalized in declared or short in declared or short in declared_short
+
+
+def _declared_exact(value: str, declared_ids: frozenset[str]) -> bool:
+    """Match product identities whose suffix is not a package version."""
+    declared = {item.strip().casefold() for item in declared_ids}
+    return "*" in declared or value.strip().casefold() in declared
 
 
 def _enabled(config: Mapping[str, Any]) -> bool:
@@ -218,7 +226,9 @@ def _codex(
         if not isinstance(record, dict):
             continue
         plugin_id = record.get("pluginId", record.get("id"))
-        if not isinstance(plugin_id, str) or not _declared(plugin_id, declared_ids):
+        if not isinstance(plugin_id, str) or not _declared_exact(
+            plugin_id, declared_ids
+        ):
             continue
         if record.get("installed") is not True or record.get("enabled") is not True:
             continue

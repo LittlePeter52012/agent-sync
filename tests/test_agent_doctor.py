@@ -1098,6 +1098,33 @@ class AgentDoctorTests(unittest.TestCase):
         )
         self.assertEqual(module.normalize_plugin_spec("sample@1.2.3"), "sample")
 
+    def test_codex_plugin_scope_does_not_conflate_marketplaces(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "codex": {
+                            "required": ["sample@reviewed-market"],
+                            "forbidden": ["sample@blocked-market"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.home / ".codex" / "config.toml").write_text(
+            '[plugins."sample@other-market"]\nenabled = true\n',
+            encoding="utf-8",
+        )
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(item["message"] for item in report["findings"])
+
+        self.assertIn("sample@reviewed-market", messages)
+        self.assertNotIn("sample@blocked-market", messages)
+
     def test_doctor_reports_capability_ownership_conflict_as_managed(self):
         policy = self.hub / "policies"
         policy.mkdir()

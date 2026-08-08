@@ -128,6 +128,42 @@ class PluginAdapterTests(unittest.TestCase):
         self.assertEqual(result.sources, ())
         self.assertIn("codex:plugin-state-uncertain", result.uncertain)
 
+    def test_codex_requires_exact_marketplace_identity_even_for_dist_tag_names(self):
+        root = self.manifest(self.home / "codex-plugin")
+
+        def runner(command, **kwargs):
+            return self.completed(
+                command,
+                {
+                    "installed": [
+                        {
+                            "pluginId": "sample@next",
+                            "marketplaceName": "next",
+                            "installed": True,
+                            "enabled": True,
+                            "source": {"path": str(root)},
+                        },
+                        {
+                            "pluginId": "@scope/sample@other-market",
+                            "marketplaceName": "other-market",
+                            "installed": True,
+                            "enabled": True,
+                            "source": {"path": str(root)},
+                        },
+                    ]
+                },
+            )
+
+        result = discover_plugins(
+            "codex",
+            self.home,
+            frozenset({"sample@latest", "@scope/sample@reviewed-market"}),
+            runner=runner,
+        )
+
+        self.assertEqual(result.sources, ())
+        self.assertEqual(result.uncertain, ())
+
     def test_claude_ignores_disabled_plugin(self):
         root = self.manifest(self.home / "claude-plugin")
 
@@ -249,6 +285,14 @@ class PluginAdapterTests(unittest.TestCase):
         )
         self.assertEqual(normalize_plugin_id("sample@latest"), "sample")
         self.assertEqual(normalize_plugin_id("sample@1.2.3"), "sample")
+        self.assertEqual(
+            normalize_plugin_id("@scope/sample@reviewed-market"),
+            "@scope/sample@reviewed-market",
+        )
+        self.assertEqual(
+            normalize_plugin_id("@scope/sample@1.2.3"),
+            "@scope/sample",
+        )
 
     def test_opencode_ignores_provider_and_secret_bearing_mcp_fields(self):
         sentinel = "DO-NOT-READ-THIS-SECRET"

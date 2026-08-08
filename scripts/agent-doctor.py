@@ -387,6 +387,11 @@ def normalize_plugin_spec(value: str) -> str:
     return normalize_plugin_id(value)
 
 
+def plugin_scope_identity(tool: str, value: str) -> str:
+    normalized = value.strip().casefold()
+    return normalized if tool == "codex" else normalize_plugin_spec(normalized)
+
+
 def opencode_plugins(declared: frozenset[str]) -> set[str]:
     path = HOME / ".config" / "opencode" / "opencode.json"
     if not path.exists():
@@ -418,13 +423,11 @@ def codex_plugins(declared: frozenset[str]) -> set[str]:
         body = match.group(2)
         if re.search(r"^enabled\s*=\s*false\s*$", body, re.M):
             continue
-        if (
-            match.group(1) in declared
-            or normalize_plugin_spec(match.group(1)) in declared
-        ):
-            plugins.add(match.group(1))
+        plugin_id = match.group(1).strip().casefold()
+        if plugin_id in declared:
+            plugins.add(plugin_id)
     plugins.update(
-        source.plugin_id
+        source.plugin_id.strip().casefold()
         for source in active_plugin_sources(
             "codex", HOME, declared_ids=declared
         )
@@ -484,14 +487,10 @@ def plugin_scope_findings() -> list[dict[str, str]]:
             )
             continue
         declared = frozenset(
-            identity
+            plugin_scope_identity(tool, plugin)
             for key in ("required", "forbidden")
             for plugin in policy.get(key, [])
             if isinstance(plugin, str)
-            for identity in (
-                plugin.casefold(),
-                normalize_plugin_spec(plugin),
-            )
         )
         installed = {
             "opencode": opencode_plugins,
@@ -499,7 +498,10 @@ def plugin_scope_findings() -> list[dict[str, str]]:
             "cursor": cursor_plugins,
         }[tool](declared)
         for plugin in policy.get("required", []):
-            if isinstance(plugin, str) and normalize_plugin_spec(plugin) not in installed:
+            if (
+                isinstance(plugin, str)
+                and plugin_scope_identity(tool, plugin) not in installed
+            ):
                 findings.append(
                     make_finding(
                         f"Required plugin missing from {labels[tool]}: {plugin}",
@@ -510,8 +512,8 @@ def plugin_scope_findings() -> list[dict[str, str]]:
         for plugin in policy.get("forbidden", []):
             if not isinstance(plugin, str):
                 continue
-            normalized = normalize_plugin_spec(plugin)
-            if plugin in installed or normalized in installed:
+            normalized = plugin_scope_identity(tool, plugin)
+            if normalized in installed:
                 findings.append(
                     make_finding(
                         f"Forbidden plugin configured in {labels[tool]}: {plugin}",

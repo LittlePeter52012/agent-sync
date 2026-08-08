@@ -177,15 +177,23 @@ def _manifest_skills(path: Path) -> list[str]:
     return skills
 
 
-def _plugin_policy_matches(policy_id: str, source_id: str) -> bool:
-    return _normalized_plugin_id(policy_id) in {
-        source_id.casefold(),
-        _normalized_plugin_id(source_id),
-    }
+def _plugin_identity(value: str, target_family: str) -> str:
+    normalized = value.strip().casefold()
+    if target_family == "codex":
+        return normalized
+    return normalize_plugin_id(normalized)
 
 
-def _normalized_plugin_id(value: str) -> str:
-    return normalize_plugin_id(value)
+def _source_plugin_identity(source: PluginSource) -> str:
+    return _plugin_identity(source.plugin_id, source.target.split(":", 1)[0])
+
+
+def _plugin_policy_matches(policy_id: str, source: PluginSource) -> bool:
+    target_family = source.target.split(":", 1)[0]
+    return (
+        _plugin_identity(policy_id, target_family)
+        == _source_plugin_identity(source)
+    )
 
 
 def _capability_contract(policy: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -255,11 +263,11 @@ def _active_official_sources(
     by_id: dict[str, PluginSource] = {}
     for source in sources:
         if not any(
-            _plugin_policy_matches(plugin_id, source.plugin_id)
+            _plugin_policy_matches(plugin_id, source)
             for plugin_id in official_plugins
         ):
             continue
-        by_id.setdefault(_normalized_plugin_id(source.plugin_id), source)
+        by_id.setdefault(_source_plugin_identity(source), source)
     return list(by_id.values())
 
 
@@ -312,7 +320,7 @@ def resolve_target_policy(
         if isinstance(name, str) and isinstance(config, dict) and _enabled(config)
     }
     for source in sources:
-        owner = f"plugin:{_normalized_plugin_id(source.plugin_id)}"
+        owner = f"plugin:{_source_plugin_identity(source)}"
         plugin_names = {
             name.casefold()
             for name in source.mcp_servers
@@ -336,18 +344,22 @@ def resolve_target_policy(
             elif name in plugin_names:
                 mcp_collisions.add(name)
 
-    contract = _capability_contract(policy)
+    raw_contract = policy.get("capability_ownership", {})
+    if not isinstance(raw_contract, dict):
+        findings.append("capability_ownership is invalid")
+        contract: Mapping[str, Any] = {}
+    else:
+        contract = raw_contract
     defaults = contract.get("defaults", {})
-    default_selection = (
-        defaults.get("selection", "auto")
-        if isinstance(defaults, dict)
-        else "auto"
-    )
+    if not isinstance(defaults, dict):
+        findings.append("capability_ownership.defaults is invalid")
+        defaults = {}
+    default_selection = defaults.get("selection", "auto")
     if not isinstance(default_selection, str):
         default_selection = "auto"
         findings.append("capability_ownership.defaults.selection is invalid")
     capabilities = contract.get("capabilities", {})
-    if capabilities and not isinstance(capabilities, dict):
+    if not isinstance(capabilities, dict):
         findings.append("capability_ownership.capabilities is invalid")
         capabilities = {}
     if isinstance(capabilities, dict):
@@ -381,11 +393,25 @@ def resolve_target_policy(
             for name in sorted(set(declared_mcp) - valid_mcp):
                 findings.append(f"{capability_name}: unknown Hub MCP {name}")
 
-            target_capability = _capability_target_policy(
-                raw_capability,
-                target_name,
-                target_family,
+            raw_targets = raw_capability.get("targets", {})
+            if not isinstance(raw_targets, dict):
+                findings.append(f"{capability_name}: targets policy is invalid")
+                raw_targets = {}
+            selected_target_key = (
+                target_name
+                if target_name in raw_targets
+                else target_family if target_family in raw_targets else None
             )
+            raw_target_capability = (
+                raw_targets.get(selected_target_key, {})
+                if selected_target_key is not None
+                else {}
+            )
+            if not isinstance(raw_target_capability, dict):
+                findings.append(f"{capability_name}: target policy is invalid")
+                target_capability: Mapping[str, Any] = {}
+            else:
+                target_capability = raw_target_capability
             selection = target_capability.get("selection", default_selection)
             selection_source = (
                 "explicit-target"
@@ -453,7 +479,7 @@ def resolve_target_policy(
                     evidence_sources.extend(active_officials)
                 else:
                     assert active_official is not None
-                    desired_owner = f"plugin:{_normalized_plugin_id(active_official.plugin_id)}"
+                    desired_owner = f"plugin:{_source_plugin_identity(active_official)}"
                     effective_owner = desired_owner
                     state = "plugin-owned"
                     reason = f"active reviewed plugin via {active_official.evidence}"
@@ -474,15 +500,17 @@ def resolve_target_policy(
                     )
                     evidence_sources.extend(active_officials)
             elif selection.startswith("plugin:"):
-                requested = _normalized_plugin_id(selection.removeprefix("plugin:"))
+                requested = _plugin_identity(
+                    selection.removeprefix("plugin:"), target_family
+                )
                 desired_owner = f"plugin:{requested}"
                 requested_source = next(
                     (
                         source
                         for source in sources
-                        if _normalized_plugin_id(source.plugin_id) == requested
+                        if _source_plugin_identity(source) == requested
                         and any(
-                            _plugin_policy_matches(plugin_id, source.plugin_id)
+                            _plugin_policy_matches(plugin_id, source)
                             for plugin_id in official_plugins
                         )
                     ),
@@ -493,7 +521,7 @@ def resolve_target_policy(
                 competing_sources = [
                     source
                     for source in active_officials
-                    if _normalized_plugin_id(source.plugin_id) != requested
+                    if _source_plugin_identity(source) != requested
                 ]
                 if requested_source is not None and not competing_sources:
                     effective_owner = desired_owner
@@ -520,7 +548,7 @@ def resolve_target_policy(
                     reason = "capability explicitly disabled"
                 else:
                     effective_owner = "plugin:multiple" if len(active_officials) > 1 else (
-                        f"plugin:{_normalized_plugin_id(active_officials[0].plugin_id)}"
+                        f"plugin:{_source_plugin_identity(active_officials[0])}"
                     )
                     state = "ownership-conflict"
                     reason = (
@@ -580,7 +608,7 @@ def resolve_target_policy(
                 owner_boundary = {}
             active_provider_ids = tuple(
                 sorted(
-                    f"plugin:{_normalized_plugin_id(source.plugin_id)}"
+                    f"plugin:{_source_plugin_identity(source)}"
                     for source in active_officials
                 )
             )
@@ -632,11 +660,11 @@ def resolve_target_policy(
     if isinstance(preferred, dict):
         for policy_id, capabilities in preferred.items():
             if not any(
-                _plugin_policy_matches(str(policy_id), source.plugin_id)
+                _plugin_policy_matches(str(policy_id), source)
                 for source in sources
             ):
                 continue
-            owner = f"plugin:{_normalized_plugin_id(str(policy_id))}"
+            owner = f"plugin:{_plugin_identity(str(policy_id), target_family)}"
             if not isinstance(capabilities, dict):
                 continue
             for skill in capabilities.get("skills", []):

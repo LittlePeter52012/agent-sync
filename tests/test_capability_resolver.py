@@ -288,6 +288,95 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertEqual(resolution.suppressed_skills, frozenset())
         self.assertEqual(resolution.suppressed_mcp, frozenset())
 
+    def test_codex_owner_preserves_scoped_marketplace_identity(self):
+        official = "@scope/cloudflare@reviewed-market"
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "cloudflare": {
+                                "hub": {
+                                    "skills": ["cloudflare"],
+                                    "mcp": ["cloudflare-local"],
+                                },
+                                "targets": {
+                                    "codex": {
+                                        "official_plugins": [official],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        root = self.root / "codex-plugin"
+        root.mkdir()
+        payload = {
+            "installed": [
+                {
+                    "pluginId": official,
+                    "marketplaceName": "reviewed-market",
+                    "installed": True,
+                    "enabled": True,
+                    "source": {"path": str(root)},
+                }
+            ]
+        }
+
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        resolution = resolve_target_policy(
+            "codex", self.home, self.hub, runner=runner
+        )
+
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "plugin-owned")
+        self.assertEqual(decision.effective_owner, f"plugin:{official}")
+        self.assertEqual(decision.active_providers, (f"plugin:{official}",))
+
+    def test_malformed_capability_contract_layers_are_findings(self):
+        malformed_documents = (
+            {"capability_ownership": []},
+            {
+                "capability_ownership": {
+                    "defaults": [],
+                    "capabilities": {},
+                }
+            },
+            {
+                "capability_ownership": {
+                    "capabilities": {
+                        "cloudflare": {
+                            "hub": {"skills": [], "mcp": []},
+                            "targets": [],
+                        }
+                    }
+                }
+            },
+            {
+                "capability_ownership": {
+                    "capabilities": {
+                        "cloudflare": {
+                            "hub": {"skills": [], "mcp": []},
+                            "targets": {"cursor": []},
+                        }
+                    }
+                }
+            },
+        )
+        for document in malformed_documents:
+            with self.subTest(document=document):
+                (self.hub / "policies" / "tool-scopes.json").write_text(
+                    json.dumps(document), encoding="utf-8"
+                )
+                resolution = resolve_target_policy("cursor", self.home, self.hub)
+                self.assertTrue(resolution.findings)
+
     def test_mcp_identity_normalizes_url_and_stdio_shape(self):
         self.assertEqual(
             normalize_mcp_identity(

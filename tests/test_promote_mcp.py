@@ -1017,6 +1017,32 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("unknown Hub MCP", result.stderr)
         self.assertFalse(gemini.exists())
 
+    def test_mcp_sync_rejects_malformed_target_policy_before_writes(self):
+        policies = self.hub / "policies"
+        policies.mkdir()
+        (policies / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "shared": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {"cursor": []},
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        gemini = self.home / ".gemini" / "settings.json"
+
+        result = self.run_agent_sync("mcp")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("target policy is invalid", result.stderr)
+        self.assertFalse(gemini.exists())
+
     def test_sync_uses_cursor_plugin_for_shared_mcp(self):
         self.write_cursor_plugin(
             {"shared": {"command": "old-command", "args": ["--old"]}}
