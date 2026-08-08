@@ -377,6 +377,22 @@ class VerifyScopeTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.exclude_shared_from_targets("cursor")
+        policy_path = self.hub / "policies" / "tool-scopes.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["capability_ownership"] = {
+            "capabilities": {
+                "owner": {
+                    "hub": {"skills": [], "mcp": ["shared"]},
+                    "targets": {
+                        "cursor": {
+                            "official_plugins": ["owner"],
+                            "selection": "auto",
+                        }
+                    },
+                }
+            }
+        }
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
 
         result = self.run_entrypoint(
             "doctor",

@@ -367,6 +367,31 @@ class ConfigInventoryTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        policies = self.hub / "policies"
+        policies.mkdir(exist_ok=True)
+        (policies / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {
+                                    "skills": [],
+                                    "mcp": ["plugin-owned"],
+                                },
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["example"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
 
         module = load_inventory_module()
         coverage = module.resolve_mcp_coverage("cursor", self.home, self.hub)

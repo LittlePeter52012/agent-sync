@@ -18,11 +18,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
-from scripts.plugin_adapters import (
-    PluginSource,
-    discover_plugins,
-    normalize_plugin_id,
-)
+try:
+    from scripts.plugin_adapters import (
+        PluginSource,
+        discover_plugins,
+        normalize_plugin_id,
+    )
+except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from plugin_adapters import PluginSource, discover_plugins, normalize_plugin_id
 
 
 @dataclass(frozen=True)
@@ -457,15 +460,41 @@ def resolve_target_policy(
                     reason = "explicit plugin is not active"
             elif selection == "disabled":
                 desired_owner = "disabled"
-                state = "disabled-by-policy"
-                reason = "capability explicitly disabled"
                 capability_skills.update(valid_skills)
                 capability_mcp.update(valid_mcp)
+                if active_official is None:
+                    state = "disabled-by-policy"
+                    reason = "capability explicitly disabled"
+                else:
+                    effective_owner = (
+                        f"plugin:{_normalized_plugin_id(active_official.plugin_id)}"
+                    )
+                    state = "ownership-conflict"
+                    reason = (
+                        "capability explicitly disabled while an equivalent "
+                        "official plugin is active"
+                    )
             elif selection.startswith("target:"):
                 desired_owner = selection
-                capability_skills.update(valid_skills)
-                capability_mcp.update(valid_mcp)
-                reason = "target provider discovery is unavailable"
+                provider_id = selection.removeprefix("target:").strip()
+                if not provider_id:
+                    findings.append(
+                        f"{capability_name}: target provider id is empty"
+                    )
+                    reason = "target provider id is empty"
+                else:
+                    effective_owner = desired_owner
+                    capability_skills.update(valid_skills)
+                    capability_mcp.update(valid_mcp)
+                    if active_official is None:
+                        state = "target-owned"
+                        reason = "target provider explicitly selected"
+                    else:
+                        state = "ownership-conflict"
+                        reason = (
+                            "target provider explicitly selected while an "
+                            "equivalent official plugin is active"
+                        )
             else:
                 findings.append(
                     f"{capability_name}: unsupported selection {selection}"

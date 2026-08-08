@@ -73,6 +73,35 @@ class PromoteMcpTests(unittest.TestCase):
         )
         return path
 
+    def write_cursor_capability_policy(
+        self,
+        mcp: list[str],
+        *,
+        selection: str = "auto",
+    ) -> None:
+        policies = self.hub / "policies"
+        policies.mkdir(exist_ok=True)
+        (policies / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "memory": {
+                                "hub": {"skills": [], "mcp": mcp},
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["memory"],
+                                        "selection": selection,
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def run_promote(self, *args: str) -> subprocess.CompletedProcess[str]:
         env = os.environ | {"HOME": str(self.home), "AGENT_HUB_ROOT": str(self.hub)}
         return subprocess.run(
@@ -603,7 +632,7 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("tool-only", servers)
         self.assertIn("shared", servers)
 
-    def test_post_sync_doctor_reports_plugin_transport_name_collision(self):
+    def test_post_sync_doctor_reports_explicit_hub_plugin_conflict(self):
         self.canonical.write_text(
             json.dumps(
                 {"mcpServers": {"shared": {"command": "/bin/sh"}}},
@@ -623,6 +652,7 @@ class PromoteMcpTests(unittest.TestCase):
                 }
             }
         )
+        self.write_cursor_capability_policy(["shared"], selection="hub")
         isolated_path = "/usr/bin:/bin:/usr/sbin:/sbin"
 
         synced = self.run_agent_sync(
@@ -642,22 +672,23 @@ class PromoteMcpTests(unittest.TestCase):
             extra_env={"PATH": isolated_path},
         )
         self.assertEqual(doctor.returncode, 0, doctor.stderr)
-        collisions = [
+        conflicts = [
             finding
             for finding in json.loads(doctor.stdout)["findings"]
-            if "MCP name collision" in finding["message"]
+            if "ownership-conflict" in finding["message"]
         ]
         self.assertEqual(
-            collisions,
+            conflicts,
             [
                 {
                     "severity": "attention",
                     "message": (
-                        "MCP name collision in Cursor: shared is provided by "
-                        "an active plugin with a different transport."
+                        "Cursor capability memory is ownership-conflict: Hub "
+                        "explicitly selected while an equivalent official "
+                        "plugin is active."
                     ),
-                    "scope": "local",
-                    "owner": "cursor",
+                    "scope": "managed",
+                    "owner": "hub",
                 }
             ],
         )
@@ -964,6 +995,7 @@ class PromoteMcpTests(unittest.TestCase):
         self.write_cursor_plugin(
             {"shared": {"command": "old-command", "args": ["--old"]}}
         )
+        self.write_cursor_capability_policy(["shared"])
         cursor_path = self.home / ".cursor" / "mcp.json"
         cursor_path.parent.mkdir(parents=True, exist_ok=True)
         cursor_path.write_text(
@@ -1010,6 +1042,7 @@ class PromoteMcpTests(unittest.TestCase):
                 }
             }
         )
+        self.write_cursor_capability_policy(["shared"])
         cursor_path = self.home / ".cursor" / "mcp.json"
         cursor_path.parent.mkdir(parents=True, exist_ok=True)
         cursor_path.write_text(
@@ -1199,6 +1232,7 @@ class PromoteMcpTests(unittest.TestCase):
                 "retire-me": {"command": "retired-command"},
             }
         )
+        self.write_cursor_capability_policy(["shared", "retire-me"])
 
         verify = subprocess.run(
             ["bash", str(VERIFY)],

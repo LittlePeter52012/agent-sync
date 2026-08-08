@@ -77,6 +77,31 @@ class AntigravitySurfaceTests(unittest.TestCase):
             )
 
     def test_cursor_plugin_owns_duplicate_skill_and_hub_link_is_restored(self):
+        policies = self.hub / "policies"
+        policies.mkdir()
+        (policies / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {
+                                    "skills": ["shared-skill"],
+                                    "mcp": [],
+                                },
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["example"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         subprocess.run(
             ["bash", str(SYNC_SKILLS)],
             env=self.env,

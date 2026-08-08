@@ -220,6 +220,28 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertEqual(record["mcp"], {"configured": 1, "expected": 1})
 
     def test_doctor_counts_cursor_plugin_shared_mcp(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "memory": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {
+                                    "cursor": {
+                                        "official_plugins": ["memory"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         cursor = self.home / ".cursor"
         cursor.mkdir()
         (cursor / "mcp.json").write_text(
@@ -576,6 +598,10 @@ class AgentDoctorTests(unittest.TestCase):
             shutil.copy2(
                 REPO / "scripts" / "capability_resolver.py",
                 tool / "scripts" / "capability_resolver.py",
+            )
+            shutil.copy2(
+                REPO / "scripts" / "plugin_adapters.py",
+                tool / "scripts" / "plugin_adapters.py",
             )
             (tool / "tests" / "test_import.py").write_text(
                 "from scripts.capability_resolver import McpIdentity\n\n"
@@ -1138,6 +1164,91 @@ class AgentDoctorTests(unittest.TestCase):
 
         self.assertNotIn("Cursor shared MCP shared", messages)
         self.assertNotIn("Cursor shared MCP coverage", messages)
+
+    def test_doctor_reports_declared_plugin_state_uncertain_without_suppressing_hub(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {
+                                    "gemini": {
+                                        "official_plugins": ["official"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        gemini_config = self.home / ".gemini" / "settings.json"
+        gemini_config.parent.mkdir(parents=True)
+        gemini_config.write_text(
+            json.dumps({"mcpServers": {"shared": {"command": "shared-mcp"}}}),
+            encoding="utf-8",
+        )
+        fake_bin = Path(self.tempdir.name) / "bin"
+        fake_bin.mkdir()
+        gemini = fake_bin / "gemini"
+        gemini.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gemini.chmod(0o755)
+
+        report = json.loads(
+            self.run_doctor(
+                extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}
+            ).stdout
+        )
+        finding = next(
+            item
+            for item in report["findings"]
+            if "plugin-state-uncertain" in item["message"]
+        )
+        gemini_record = next(
+            item for item in report["agents"] if item["name"] == "Gemini CLI"
+        )
+
+        self.assertEqual(finding["scope"], "local")
+        self.assertEqual(finding["owner"], "gemini")
+        self.assertEqual(
+            gemini_record["mcp_ownership"]["shared"]["state"], "hub-managed"
+        )
+
+    def test_doctor_ignores_unrelated_unmapped_editor_extensions(self):
+        policy = self.hub / "policies"
+        policy.mkdir()
+        (policy / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "capabilities": {
+                            "example": {
+                                "hub": {"skills": [], "mcp": ["shared"]},
+                                "targets": {"cursor": {"selection": "hub"}},
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        database = (
+            self.home
+            / "Library/Application Support/Code/User/globalStorage/state.vscdb"
+        )
+        database.parent.mkdir(parents=True)
+        database.write_text("not a database", encoding="utf-8")
+
+        report = json.loads(self.run_doctor().stdout)
+        messages = "\n".join(item["message"] for item in report["findings"])
+
+        self.assertNotIn("vscode:plugin-state-uncertain", messages)
 
     def test_doctor_audits_codex_orchestration_and_stale_hook_state(self):
         policy = self.hub / "policies"

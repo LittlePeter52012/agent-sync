@@ -389,7 +389,7 @@ def normalize_plugin_spec(value: str) -> str:
     return value.split("@", 1)[0]
 
 
-def opencode_plugins() -> set[str]:
+def opencode_plugins(declared: frozenset[str]) -> set[str]:
     path = HOME / ".config" / "opencode" / "opencode.json"
     if not path.exists():
         return set()
@@ -402,10 +402,11 @@ def opencode_plugins() -> set[str]:
         normalize_plugin_spec(value)
         for value in values
         if isinstance(value, str)
+        and normalize_plugin_spec(value) in declared
     }
 
 
-def codex_plugins() -> set[str]:
+def codex_plugins(declared: frozenset[str]) -> set[str]:
     path = HOME / ".codex" / "config.toml"
     if not path.exists():
         return set()
@@ -419,18 +420,26 @@ def codex_plugins() -> set[str]:
         body = match.group(2)
         if re.search(r"^enabled\s*=\s*false\s*$", body, re.M):
             continue
-        plugins.add(match.group(1))
+        if (
+            match.group(1) in declared
+            or normalize_plugin_spec(match.group(1)) in declared
+        ):
+            plugins.add(match.group(1))
     plugins.update(
         source.plugin_id
-        for source in active_plugin_sources("codex", HOME)
+        for source in active_plugin_sources(
+            "codex", HOME, declared_ids=declared
+        )
     )
     return plugins
 
 
-def cursor_plugins() -> set[str]:
+def cursor_plugins(declared: frozenset[str]) -> set[str]:
     return {
         normalize_plugin_spec(source.plugin_id)
-        for source in active_plugin_sources("cursor", HOME)
+        for source in active_plugin_sources(
+            "cursor", HOME, declared_ids=declared
+        )
     }
 
 
@@ -451,11 +460,6 @@ def plugin_scope_findings() -> list[dict[str, str]]:
                 owner="hub",
             )
         ]
-    inventories = {
-        "opencode": opencode_plugins(),
-        "codex": codex_plugins(),
-        "cursor": cursor_plugins(),
-    }
     labels = {
         "opencode": "OpenCode",
         "codex": "Codex / ChatGPT",
@@ -463,7 +467,7 @@ def plugin_scope_findings() -> list[dict[str, str]]:
     }
     findings: list[dict[str, str]] = []
     for tool, policy in policies.items():
-        if tool not in inventories:
+        if tool not in labels:
             findings.append(
                 make_finding(
                     f"Plugin scope policy has an unsupported tool: {tool}",
@@ -481,7 +485,17 @@ def plugin_scope_findings() -> list[dict[str, str]]:
                 )
             )
             continue
-        installed = inventories[tool]
+        declared = frozenset(
+            normalize_plugin_spec(plugin)
+            for key in ("required", "forbidden")
+            for plugin in policy.get(key, [])
+            if isinstance(plugin, str)
+        )
+        installed = {
+            "opencode": opencode_plugins,
+            "codex": codex_plugins,
+            "cursor": cursor_plugins,
+        }[tool](declared)
         for plugin in policy.get("required", []):
             if isinstance(plugin, str) and normalize_plugin_spec(plugin) not in installed:
                 findings.append(
@@ -1627,7 +1641,7 @@ def effective_mcp_findings(
 
 
 def capability_ownership_findings() -> list[dict[str, str]]:
-    targets = (
+    targets = [
         ("Codex / ChatGPT", "codex"),
         ("Claude", "claude"),
         ("Cursor", "cursor"),
@@ -1638,7 +1652,21 @@ def capability_ownership_findings() -> list[dict[str, str]]:
         ("Antigravity IDE", "antigravity-ide"),
         ("OpenCode", "opencode"),
         ("Copilot / VS Code", "vscode"),
+    ]
+    profiles = (
+        HOME
+        / "Library"
+        / "Application Support"
+        / "Code"
+        / "User"
+        / "profiles"
     )
+    if profiles.is_dir():
+        targets.extend(
+            (f"VS Code Profile {path.name}", f"vscode:{path.name}")
+            for path in sorted(profiles.iterdir())
+            if path.is_dir()
+        )
     findings: list[dict[str, str]] = []
     for label, target in targets:
         resolution = resolve_target_policy(target, HOME, HUB)
@@ -1648,6 +1676,14 @@ def capability_ownership_findings() -> list[dict[str, str]]:
                     f"Invalid capability ownership policy for {label}: {message}",
                     scope="policy",
                     owner="hub",
+                )
+            )
+        for message in resolution.uncertain:
+            findings.append(
+                make_finding(
+                    f"{label} plugin-state-uncertain: {message}.",
+                    scope="local",
+                    owner=target,
                 )
             )
         for decision in resolution.capabilities.values():

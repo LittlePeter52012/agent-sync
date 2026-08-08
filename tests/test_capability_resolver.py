@@ -493,6 +493,45 @@ class CapabilityResolverTests(unittest.TestCase):
             "disabled-by-policy",
         )
 
+    def test_disabled_selection_reports_active_official_plugin_conflict(self):
+        self.write_capability_policy(selection="disabled")
+        self.cursor_plugin("cloudflare", "abc", skill="cloudflare", servers={})
+        self.enable_cursor_plugin("cloudflare", "abc")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "ownership-conflict")
+        self.assertEqual(decision.desired_owner, "disabled")
+        self.assertEqual(decision.effective_owner, "plugin:cloudflare")
+
+    def test_explicit_target_provider_suppresses_hub_bundle(self):
+        self.write_capability_policy(selection="target:cursor-native")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertEqual(
+            resolution.suppressed_skills, frozenset({"cloudflare"})
+        )
+        self.assertEqual(
+            resolution.suppressed_mcp, frozenset({"cloudflare-local"})
+        )
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "target-owned")
+        self.assertEqual(decision.effective_owner, "target:cursor-native")
+
+    def test_explicit_target_provider_reports_active_official_plugin_conflict(self):
+        self.write_capability_policy(selection="target:cursor-native")
+        self.cursor_plugin("cloudflare", "abc", skill="cloudflare", servers={})
+        self.enable_cursor_plugin("cloudflare", "abc")
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        decision = resolution.capabilities["cloudflare"]
+        self.assertEqual(decision.state, "ownership-conflict")
+        self.assertEqual(decision.desired_owner, "target:cursor-native")
+        self.assertEqual(decision.effective_owner, "target:cursor-native")
+
     def test_unknown_hub_component_is_reported_without_suppression(self):
         self.write_capability_policy(mcp=["not-in-hub"])
         self.cursor_plugin("cloudflare", "abc", skill="cloudflare", servers={})
