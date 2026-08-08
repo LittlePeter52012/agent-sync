@@ -1043,6 +1043,30 @@ class PromoteMcpTests(unittest.TestCase):
         self.assertIn("target policy is invalid", result.stderr)
         self.assertFalse(gemini.exists())
 
+    def test_mcp_sync_rejects_duplicate_policy_keys_before_writes(self):
+        policies = self.hub / "policies"
+        policies.mkdir()
+        (policies / "tool-scopes.json").write_text(
+            """{
+              "capability_ownership": {
+                "capabilities": {
+                  "shared": {
+                    "hub": {"skills": [], "mcp": ["shared"]},
+                    "targets": {"cursor": {}, "cursor": {}}
+                  }
+                }
+              }
+            }""",
+            encoding="utf-8",
+        )
+        gemini = self.home / ".gemini" / "settings.json"
+
+        result = self.run_agent_sync("mcp")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate JSON keys", result.stderr)
+        self.assertFalse(gemini.exists())
+
     def test_sync_uses_cursor_plugin_for_shared_mcp(self):
         self.write_cursor_plugin(
             {"shared": {"command": "old-command", "args": ["--old"]}}

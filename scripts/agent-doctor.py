@@ -1645,6 +1645,8 @@ def effective_mcp_findings(
 
 
 def capability_ownership_findings() -> list[dict[str, str]]:
+    if policy_file_findings():
+        return []
     targets = [
         ("Codex / ChatGPT", "codex"),
         ("Claude", "claude"),

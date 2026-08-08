@@ -387,6 +387,28 @@ class CapabilityResolverTests(unittest.TestCase):
                 resolution = resolve_target_policy("cursor", self.home, self.hub)
                 self.assertTrue(resolution.findings)
 
+    def test_duplicate_policy_json_keys_are_findings(self):
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            """{
+              "capability_ownership": {
+                "capabilities": {
+                  "cloudflare": {
+                    "hub": {"skills": [], "mcp": []},
+                    "targets": {"cursor": {}, "cursor": {}}
+                  }
+                }
+              }
+            }""",
+            encoding="utf-8",
+        )
+
+        resolution = resolve_target_policy("cursor", self.home, self.hub)
+
+        self.assertIn(
+            "capability ownership policy has duplicate JSON keys",
+            resolution.findings,
+        )
+
     def test_mcp_identity_normalizes_url_and_stdio_shape(self):
         self.assertEqual(
             normalize_mcp_identity(

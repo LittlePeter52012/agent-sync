@@ -79,6 +79,36 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+class _DuplicateJsonKeyError(ValueError):
+    pass
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        if key in value:
+            raise _DuplicateJsonKeyError
+        value[key] = child
+    return value
+
+
+def _load_policy_json(path: Path) -> tuple[dict[str, Any], str | None]:
+    if not path.exists():
+        return {}, None
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except _DuplicateJsonKeyError:
+        return {}, "capability ownership policy has duplicate JSON keys"
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}, "capability ownership policy is unreadable JSON"
+    if not isinstance(value, dict):
+        return {}, "capability ownership policy root is not an object"
+    return value, None
+
+
 def _enabled(config: Mapping[str, Any]) -> bool:
     return config.get("enabled", True) is not False and config.get("disabled") is not True
 
@@ -290,7 +320,9 @@ def resolve_target_policy(
     shared_document = _load_json(resolved_hub / "mcp" / "shared-servers.json")
     shared_value = shared_document.get("mcpServers", {})
     shared = shared_value if isinstance(shared_value, dict) else {}
-    policy = _load_json(resolved_hub / "policies" / "tool-scopes.json")
+    policy, policy_issue = _load_policy_json(
+        resolved_hub / "policies" / "tool-scopes.json"
+    )
     discovery = discover_plugins(
         target_name,
         resolved_home,
@@ -305,7 +337,7 @@ def resolve_target_policy(
     mcp_owners: dict[str, str] = {}
     mcp_collisions: set[str] = set()
     capability_decisions: dict[str, CapabilityDecision] = {}
-    findings: list[str] = []
+    findings: list[str] = [policy_issue] if policy_issue else []
     contract_skills: set[str] = set()
     contract_mcp: set[str] = set()
 
@@ -738,23 +770,13 @@ def main() -> int:
 
     if args.command == "validate":
         policy_path = args.hub.expanduser() / "policies" / "tool-scopes.json"
-        if policy_path.exists():
-            try:
-                policy = json.loads(policy_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                print(
-                    "Invalid capability ownership policy: unreadable JSON",
-                    file=sys.stderr,
-                )
-                return 2
-            if not isinstance(policy, dict):
-                print(
-                    "Invalid capability ownership policy: root is not an object",
-                    file=sys.stderr,
-                )
-                return 2
-        else:
-            policy = {}
+        policy, policy_issue = _load_policy_json(policy_path)
+        if policy_issue:
+            print(
+                f"Invalid capability ownership policy: {policy_issue}",
+                file=sys.stderr,
+            )
+            return 2
         targets: set[str] = {"cursor"}
         capabilities = _capability_contract(policy).get("capabilities", {})
         if isinstance(capabilities, dict):
