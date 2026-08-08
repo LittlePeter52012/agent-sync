@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -309,7 +310,7 @@ class CapabilityResolverTests(unittest.TestCase):
         )
         self.assertNotIn("cloudflare-local", resolution.suppressed_mcp)
 
-    def test_same_name_different_transport_is_not_automatic_plugin_ownership(self):
+    def test_unmapped_plugin_is_not_probed_or_treated_as_collision(self):
         plugin = self.home / ".cursor/plugins/local/conflict"
         plugin.mkdir(parents=True)
         (plugin / ".mcp.json").write_text(
@@ -330,10 +331,7 @@ class CapabilityResolverTests(unittest.TestCase):
 
         self.assertNotIn("shared-mcp", resolution.suppressed_mcp)
         self.assertNotIn("shared-mcp", resolution.mcp_owners)
-        self.assertEqual(
-            resolution.mcp_collisions,
-            frozenset({"shared-mcp"}),
-        )
+        self.assertEqual(resolution.mcp_collisions, frozenset())
 
     def test_explicit_marketplace_preference_resolves_same_name_collision(self):
         plugin = self.home / ".cursor/plugins/local/conflict"
@@ -506,6 +504,70 @@ class CapabilityResolverTests(unittest.TestCase):
         self.assertTrue(
             any("not-in-hub" in finding for finding in resolution.findings)
         )
+
+    def test_profile_target_is_passed_intact_to_plugin_adapter(self):
+        (self.hub / "policies" / "tool-scopes.json").write_text(
+            json.dumps(
+                {
+                    "capability_ownership": {
+                        "defaults": {"selection": "auto"},
+                        "capabilities": {
+                            "cloudflare": {
+                                "hub": {
+                                    "skills": ["cloudflare"],
+                                    "mcp": ["cloudflare-local"],
+                                },
+                                "targets": {
+                                    "vscode": {
+                                        "official_plugins": ["vendor.sample"],
+                                        "selection": "auto",
+                                    }
+                                },
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        database = (
+            self.home
+            / "Library/Application Support/Code/User/profiles/research/globalStorage/state.vscdb"
+        )
+        database.parent.mkdir(parents=True)
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("CREATE TABLE ItemTable (key TEXT, value TEXT)")
+            connection.commit()
+        finally:
+            connection.close()
+
+        def runner(command, **kwargs):
+            self.assertEqual(
+                command,
+                [
+                    "code",
+                    "--profile",
+                    "research",
+                    "--list-extensions",
+                    "--show-versions",
+                ],
+            )
+            return subprocess.CompletedProcess(
+                command, 0, "vendor.sample@1.0.0\n", ""
+            )
+
+        resolution = resolve_target_policy(
+            "vscode:research", self.home, self.hub, runner=runner
+        )
+
+        self.assertEqual(
+            resolution.suppressed_skills, frozenset({"cloudflare"})
+        )
+        self.assertEqual(
+            resolution.suppressed_mcp, frozenset({"cloudflare-local"})
+        )
+        self.assertEqual(resolution.uncertain, ())
 
 
 if __name__ == "__main__":

@@ -18,22 +18,18 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
+from scripts.plugin_adapters import (
+    PluginSource,
+    discover_plugins,
+    normalize_plugin_id,
+)
+
 
 @dataclass(frozen=True)
 class McpIdentity:
     transport: str
     endpoint: str
     args: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class PluginSource:
-    target: str
-    plugin_id: str
-    evidence: str
-    root: Path
-    skills: frozenset[str]
-    mcp_servers: Mapping[str, Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -131,134 +127,21 @@ def mcp_identity_matches(
     return True
 
 
-def _plugin_capabilities(
-    target: str,
-    plugin_id: str,
-    evidence: str,
-    root: Path,
-) -> PluginSource:
-    skills: set[str] = set()
-    skills_root = root / "skills"
-    if skills_root.exists():
-        for skill_file in skills_root.glob("*/SKILL.md"):
-            skills.add(skill_file.parent.name.casefold())
-
-    servers: dict[str, Mapping[str, Any]] = {}
-    candidates = (
-        root / ".mcp.json",
-        root / "mcp.json",
-        root / ".cursor" / "mcp.json",
-    )
-    for config_path in candidates:
-        document = _load_json(config_path)
-        bucket = document.get("mcpServers", document.get("servers", {}))
-        if not isinstance(bucket, dict):
-            continue
-        for name, config in bucket.items():
-            if isinstance(name, str) and isinstance(config, dict) and _enabled(config):
-                servers[name] = config
-
-    return PluginSource(
-        target=target,
-        plugin_id=plugin_id,
-        evidence=evidence,
-        root=root,
-        skills=frozenset(skills),
-        mcp_servers=servers,
-    )
-
-
-def _cursor_log_plugins(home: Path) -> dict[str, str]:
-    log_root = home / "Library" / "Application Support" / "Cursor" / "logs"
-    logs = list(log_root.glob("**/Cursor Plugins.log")) if log_root.exists() else []
-    if not logs:
-        return {}
-    try:
-        newest = max(logs, key=lambda path: path.stat().st_mtime)
-        text = newest.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {}
-    pattern = re.compile(
-        r"Adding enabled plugin:\s+([^\s]+)\s+from\s+([^\s]+)\s+at\b"
-    )
-    active: dict[str, str] = {}
-    for match in pattern.finditer(text):
-        active[match.group(1)] = match.group(2)
-    return active
-
-
-def _cursor_sources(home: Path) -> list[PluginSource]:
-    sources: list[PluginSource] = []
-    local_root = home / ".cursor" / "plugins" / "local"
-    if local_root.exists():
-        for root in sorted(path for path in local_root.iterdir() if path.is_dir()):
-            source = _plugin_capabilities("cursor", root.name, "cursor-local", root)
-            if source.skills or source.mcp_servers:
-                sources.append(source)
-
-    cache = home / ".cursor" / "plugins" / "cache"
-    for name, revision in sorted(_cursor_log_plugins(home).items()):
-        matches = list(cache.glob(f"*/{name}/{revision}"))
-        if not matches:
-            continue
-        source = _plugin_capabilities(
-            "cursor",
-            name,
-            "cursor-log",
-            sorted(matches)[0],
-        )
-        if source.skills or source.mcp_servers:
-            sources.append(source)
-    return sources
-
-
-def _codex_sources(
-    runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> list[PluginSource]:
-    try:
-        completed = runner(
-            ["codex", "plugin", "list", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        payload = json.loads(completed.stdout) if completed.returncode == 0 else {}
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return []
-    records = payload.get("installed", []) if isinstance(payload, dict) else []
-    sources: list[PluginSource] = []
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        if record.get("installed") is not True or record.get("enabled") is not True:
-            continue
-        source_info = record.get("source", {})
-        path = source_info.get("path") if isinstance(source_info, dict) else None
-        plugin_id = record.get("pluginId")
-        if not isinstance(path, str) or not isinstance(plugin_id, str):
-            continue
-        root = Path(path).expanduser()
-        source = _plugin_capabilities("codex", plugin_id, "codex-cli", root)
-        if source.skills or source.mcp_servers:
-            sources.append(source)
-    return sources
-
-
 def active_plugin_sources(
     target: str,
     home: Path | None = None,
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    declared_ids: frozenset[str] | None = None,
 ) -> list[PluginSource]:
-    """Discover active plugin capabilities for a supported target."""
-    resolved_home = (home or Path.home()).expanduser()
-    target_name = target.casefold()
-    if target_name == "cursor":
-        return _cursor_sources(resolved_home)
-    if target_name == "codex":
-        return _codex_sources(runner)
-    return []
+    """Compatibility wrapper around reviewed product plugin discovery."""
+    discovery = discover_plugins(
+        target,
+        (home or Path.home()).expanduser(),
+        declared_ids if declared_ids is not None else frozenset({"*"}),
+        runner=runner,
+    )
+    return list(discovery.sources)
 
 
 def _manifest_skills(path: Path) -> list[str]:
@@ -290,11 +173,7 @@ def _plugin_policy_matches(policy_id: str, source_id: str) -> bool:
 
 
 def _normalized_plugin_id(value: str) -> str:
-    normalized = value.casefold()
-    if normalized.startswith("@"):
-        version_marker = normalized.rfind("@")
-        return normalized if version_marker == 0 else normalized[:version_marker]
-    return normalized.split("@", 1)[0]
+    return normalize_plugin_id(value)
 
 
 def _capability_contract(policy: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -320,6 +199,41 @@ def _capability_target_policy(
         return {}
     value = targets.get(target_name, targets.get(target_family, {}))
     return value if isinstance(value, dict) else {}
+
+
+def _declared_plugin_ids(
+    policy: Mapping[str, Any],
+    target_name: str,
+    target_family: str,
+) -> frozenset[str]:
+    declared: set[str] = set()
+    contract = _capability_contract(policy)
+    capabilities = contract.get("capabilities", {})
+    if isinstance(capabilities, dict):
+        for capability in capabilities.values():
+            if not isinstance(capability, dict):
+                continue
+            target_policy = _capability_target_policy(
+                capability, target_name, target_family
+            )
+            values = _string_list(target_policy.get("official_plugins", []))
+            if values is not None:
+                declared.update(values)
+
+    plugins_policy = policy.get("plugins", {})
+    target_plugins = (
+        plugins_policy.get(target_name, plugins_policy.get(target_family, {}))
+        if isinstance(plugins_policy, dict)
+        else {}
+    )
+    preferred = (
+        target_plugins.get("prefer_marketplace", {})
+        if isinstance(target_plugins, dict)
+        else {}
+    )
+    if isinstance(preferred, dict):
+        declared.update(str(plugin_id).casefold() for plugin_id in preferred)
+    return frozenset(declared)
 
 
 def _active_official_source(
@@ -353,13 +267,19 @@ def resolve_target_policy(
     ).expanduser()
     target_name = target.casefold()
     target_family = target_name.split(":", 1)[0]
-    sources = active_plugin_sources(target_family, resolved_home, runner=runner)
 
     skills = _manifest_skills(resolved_hub / "manifest.yaml")
     shared_document = _load_json(resolved_hub / "mcp" / "shared-servers.json")
     shared_value = shared_document.get("mcpServers", {})
     shared = shared_value if isinstance(shared_value, dict) else {}
     policy = _load_json(resolved_hub / "policies" / "tool-scopes.json")
+    discovery = discover_plugins(
+        target_name,
+        resolved_home,
+        _declared_plugin_ids(policy, target_name, target_family),
+        runner=runner,
+    )
+    sources = list(discovery.sources)
 
     suppressed_skills: set[str] = set()
     suppressed_mcp: set[str] = set()
@@ -380,7 +300,7 @@ def resolve_target_policy(
         if isinstance(name, str) and isinstance(config, dict) and _enabled(config)
     }
     for source in sources:
-        owner = f"plugin:{source.plugin_id.split('@', 1)[0]}"
+        owner = f"plugin:{_normalized_plugin_id(source.plugin_id)}"
         plugin_names = {
             name.casefold()
             for name in source.mcp_servers
@@ -634,6 +554,7 @@ def resolve_target_policy(
         active_plugins=tuple(sources),
         capabilities=capability_decisions,
         findings=tuple(findings),
+        uncertain=discovery.uncertain,
     )
 
 
