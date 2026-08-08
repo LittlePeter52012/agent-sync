@@ -5,7 +5,7 @@
 # (default: ~/.config/agent-hub), not in this repository.
 #
 # Usage:
-#   agent-sync sync|sources|trace|deps|skills|mcp|rules|hermes|multica|deploy|all|list|verify|test|status|doctor|fix|bench|update|push|help
+#   agent-sync sync|sources|trace|ownership|deps|skills|mcp|rules|hermes|multica|deploy|all|list|verify|test|status|doctor|fix|bench|update|push|help
 #
 # Environment:
 #   AGENT_HUB_ROOT   Personal config hub (default: ~/.config/agent-hub)
@@ -43,6 +43,8 @@ Commands:
                      Hub → all tools, or TOOL → Hub → all tools
   sources [--json]   Rank local MCP configs as promotion candidates
   trace mcp NAME     Show secret-free MCP ownership and locations
+  ownership [CAPABILITY] [--target TARGET] [--json]
+                     Explain the effective provider for each capability
   deps check [--json] [--refresh]
   deps pin SERVER VERSION [--dry-run|--apply]
   deps smoke SERVER [--target TARGET] [--timeout SECONDS]
@@ -169,6 +171,10 @@ case "$cmd" in
     trace)
         require_hub
         exec python3 "$SCRIPTS/trace-config.py" "$@"
+        ;;
+    ownership)
+        require_hub
+        exec python3 "$SCRIPTS/ownership.py" "$@"
         ;;
     deps)
         require_hub
