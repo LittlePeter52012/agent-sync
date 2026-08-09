@@ -1920,7 +1920,10 @@ class McpDependencyCliTests(unittest.TestCase):
         os.mkfifo(self.cache_path, 0o600)
         before = self.shared_path.read_bytes()
 
-        result = self.run_entrypoint("all", timeout=10)
+        # This integration path includes every sync target plus the managed
+        # runtime doctor. Keep the bound finite to catch a FIFO block without
+        # coupling the test to cold-start timing on slower hosts.
+        result = self.run_entrypoint("all", timeout=30)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn(
