@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .sync-backups/
 .worktrees/
+.superpowers/
 *.swp
 .env
 secrets.json
