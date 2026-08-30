@@ -266,7 +266,14 @@ PY
         bash "$SCRIPTS/bench-sync.sh"
         ;;
     init)
-        if [ -d "$HUB" ] && [ -f "$HUB/manifest.yaml" ]; then
+        if [ -L "$HUB" ]; then
+            echo "Cannot initialize Hub through a symbolic link: $HUB" >&2
+            echo "Existing files were left unchanged." >&2
+            exit 1
+        fi
+        if [ -d "$HUB" ] \
+            && [ -f "$HUB/manifest.yaml" ] \
+            && [ -f "$HUB/mcp/shared-servers.json" ]; then
             echo "Hub already exists: $HUB"
             exit 0
         fi
