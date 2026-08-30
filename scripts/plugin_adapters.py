@@ -170,7 +170,7 @@ def _records(payload: Any, *keys: str) -> list[Any] | None:
 
 def _cursor_log_plugins(home: Path) -> dict[str, str]:
     log_root = home / "Library" / "Application Support" / "Cursor" / "logs"
-    logs = list(log_root.glob("**/Cursor Plugins.log")) if log_root.exists() else []
+    logs = list(log_root.glob("**/Cursor Plugins*.log")) if log_root.exists() else []
     if not logs:
         return {}
     try:

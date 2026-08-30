@@ -62,15 +62,35 @@ git clone https://github.com/LittlePeter52012/agent-sync.git ~/.local/share/agen
 ln -sf ~/.local/share/agent-sync/bin/agent-sync ~/.local/bin/agent-sync
 
 agent-sync init
+```
+
+The public `agent-sync` repository is the synchronizer. `init` creates a
+separate, empty private Agent Hub at `~/.config/agent-hub`; it does not activate
+the demonstration Skills, MCP servers, rules, or hooks from this repository.
+
+**If one Agent is already configured the way you want:**
+
+```bash
 agent-sync sources
-agent-sync sync --from cursor --dry-run
-agent-sync sync
-agent-sync doctor --runtime
+# Replace TOOL with the recommended source shown above.
+agent-sync sync --from TOOL --dry-run
+agent-sync sync --from TOOL
+agent-sync verify --strict --scope managed
+```
+
+**If you are starting from scratch:**
+
+```bash
+# Edit manifest.yaml, skills/, mcp/shared-servers.json, and optional rules/.
+agent-sync all
+agent-sync verify --strict --scope managed
 ```
 
 `sources` is read-only. `sync --from` previews the MCP changes before promotion;
-it never chooses a source from modification time alone. `sync` then distributes
-the current Hub state without discovering or updating package versions.
+it never chooses a source from modification time alone. `all` distributes the
+current Hub state and runs managed verification, without discovering or
+approving package updates. `agent-sync sync` remains the direct Hub-to-targets
+command; use `agent-sync doctor --runtime` for a broader local health report.
 
 ## Supported tools
 
@@ -141,15 +161,15 @@ Adopt an existing MCP configuration explicitly:
 
 ```bash
 agent-sync sources
-agent-sync sync --from cursor --dry-run
-agent-sync sync --from cursor
+agent-sync sync --from TOOL --dry-run
+agent-sync sync --from TOOL
 ```
 
 ## Command reference
 
 | Command | Purpose |
 |---|---|
-| `agent-sync init` | Create a minimal private Hub from generic examples |
+| `agent-sync init` | Create an empty private Hub starter; examples stay opt-in |
 | `agent-sync sources [--json]` | Rank local MCP source candidates without writing |
 | `agent-sync sync [--from TOOL] [--dry-run\|--yes]` | Distribute Hub state or explicitly promote one MCP source first |
 | `agent-sync skills [--force]` | Link allowlisted Skills to supported tools |

@@ -59,14 +59,33 @@ git clone https://github.com/LittlePeter52012/agent-sync.git ~/.local/share/agen
 ln -sf ~/.local/share/agent-sync/bin/agent-sync ~/.local/bin/agent-sync
 
 agent-sync init
+```
+
+公开的 `agent-sync` 仓库是同步器。`init` 会在 `~/.config/agent-hub` 创建一个
+独立、空白的私有 Agent Hub；它不会自动启用本仓库中的演示 Skills、MCP、规则或 hooks。
+
+**如果已有某个 Agent 的配置符合你的需要：**
+
+```bash
 agent-sync sources
-agent-sync sync --from cursor --dry-run
-agent-sync sync
-agent-sync doctor --runtime
+# 将 TOOL 替换为上一步推荐的来源。
+agent-sync sync --from TOOL --dry-run
+agent-sync sync --from TOOL
+agent-sync verify --strict --scope managed
+```
+
+**如果完全从零开始：**
+
+```bash
+# 编辑 manifest.yaml、skills/、mcp/shared-servers.json 和可选的 rules/。
+agent-sync all
+agent-sync verify --strict --scope managed
 ```
 
 `sources` 只读。`sync --from` 会先预览 MCP 变更，再决定是否晋升配置；它不会
-仅根据修改时间自动选择来源。`sync` 随后分发 Hub 当前状态，不会顺便发现或更新依赖版本。
+仅根据修改时间自动选择来源。`all` 会分发 Hub 当前状态并执行受管理验证，但不会
+自行发现或批准依赖升级。`agent-sync sync` 仍是直接从 Hub 分发到各目标的命令；
+`agent-sync doctor --runtime` 用于更广泛的本机健康检查。
 
 ## 支持的工具
 
@@ -132,15 +151,15 @@ agent-sync audit                              # 检查令牌、个人信息和�
 
 ```bash
 agent-sync sources
-agent-sync sync --from cursor --dry-run
-agent-sync sync --from cursor
+agent-sync sync --from TOOL --dry-run
+agent-sync sync --from TOOL
 ```
 
 ## 命令参考
 
 | 命令 | 用途 |
 |---|---|
-| `agent-sync init` | 根据通用示例创建最小私有 Hub |
+| `agent-sync init` | 创建空白私有 Hub 骨架；示例保持按需启用 |
 | `agent-sync sources [--json]` | 对本地 MCP 来源进行只读排序 |
 | `agent-sync sync [--from TOOL] [--dry-run\|--yes]` | 分发 Hub 状态，或先显式晋升一个 MCP 来源 |
 | `agent-sync skills [--force]` | 将允许列表中的 Skills 链接到受支持工具 |

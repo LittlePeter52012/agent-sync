@@ -99,6 +99,29 @@ class PluginAdapterTests(unittest.TestCase):
         self.assertEqual(result.sources[0].evidence, "claude-cli")
         self.assertEqual(result.uncertain, ())
 
+    def test_cursor_accepts_current_timestamped_plugin_log_name(self):
+        root = self.manifest(
+            self.home
+            / ".cursor/plugins/cache/cursor-public/sample/revision"
+        )
+        log = (
+            self.home
+            / "Library/Application Support/Cursor/logs/session/window/exthost"
+            / "anysphere.cursor-agent-exec/Cursor Plugins.20260830T133858.log"
+        )
+        log.parent.mkdir(parents=True)
+        log.write_text(
+            "BackendMarketplaceClient: Adding enabled plugin: "
+            "sample from revision at undefined\n",
+            encoding="utf-8",
+        )
+
+        result = discover_plugins("cursor", self.home, frozenset({"sample"}))
+
+        self.assertEqual([source.plugin_id for source in result.sources], ["sample"])
+        self.assertEqual(result.sources[0].root, root)
+        self.assertEqual(result.sources[0].evidence, "cursor-log")
+
     def test_codex_rejects_mismatched_marketplace_metadata(self):
         root = self.manifest(self.home / "codex-plugin")
 

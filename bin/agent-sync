@@ -66,7 +66,7 @@ Commands:
                      Local capability, configuration, and runtime health report
   fix [--dry-run]    Safely repair missing sync coverage and duplicate rules
   bench              Symlink vs rsync comparison
-  init               Create a minimal personal hub from examples
+  init               Create an empty private Hub starter
   update [--check] [--hub] [--sync] [--force]
                      Update agent-sync tool from git (optionally hub + re-sync)
   pull               git pull personal hub only
@@ -270,10 +270,26 @@ PY
             echo "Hub already exists: $HUB"
             exit 0
         fi
-        mkdir -p "$HUB"
-        cp -R "$AGENT_SYNC_HOME/examples/." "$HUB/"
-        echo "Created personal hub at: $HUB"
-        echo "Edit manifest.yaml, mcp/shared-servers.json, skills/, rules/ — then run: agent-sync all"
+        if [ -e "$HUB" ]; then
+            if [ ! -d "$HUB" ]; then
+                echo "Cannot initialize Hub: path is not a directory: $HUB" >&2
+                exit 1
+            fi
+            if [ -n "$(find "$HUB" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+                echo "Cannot initialize Hub: directory is not empty: $HUB" >&2
+                echo "Existing files were left unchanged." >&2
+                exit 1
+            fi
+        fi
+        umask 077
+        mkdir -p "$HUB/skills" "$HUB/rules"
+        cp -R "$AGENT_SYNC_HOME/templates/hub/." "$HUB/"
+        chmod 700 "$HUB"
+        echo "Created empty private Agent Hub at: $HUB"
+        echo "No shared capabilities are active. Choose one path:"
+        echo "  Existing Agent config: agent-sync sources"
+        echo "  Start from scratch: edit the Hub, then run agent-sync all"
+        echo "Guide: $HUB/README.md"
         ;;
     update)
         UPD_ARGS=()

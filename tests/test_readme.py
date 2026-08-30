@@ -11,8 +11,9 @@ HERO_ASSETS = (
 )
 CORE_COMMANDS = (
     "agent-sync sources",
-    "agent-sync sync --from cursor --dry-run",
+    "agent-sync sync --from TOOL --dry-run",
     "agent-sync sync",
+    "agent-sync all",
     "agent-sync doctor --runtime",
     "agent-sync ownership",
     "agent-sync verify",

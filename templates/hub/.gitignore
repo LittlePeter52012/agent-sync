@@ -1,0 +1,10 @@
+.DS_Store
+.sync-backups/
+.worktrees/
+__pycache__/
+*.py[cod]
+*.swp
+*~
+.env
+secrets.json
+mcp/local-overrides.json
