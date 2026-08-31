@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.2 — 2026-08-31
+
+- Make remote deployment roll back only when structural synchronization fails;
+  host-specific runtime Doctor findings remain visible but no longer discard a
+  structurally valid deployment.
+
 ## 1.12.1 — 2026-08-31
 
 - Register the shared Skill directory in every detected Hermes profile, not

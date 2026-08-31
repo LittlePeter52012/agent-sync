@@ -17,7 +17,7 @@ Usage: agent-sync deploy HOST [--apply]
 Without --apply, run a read-only SSH preflight. With --apply, stream the
 committed agent-sync and Agent Hub snapshots to HOST, preserve the previous
 remote copies under ~/.local/state/agent-sync/remote-backups/, run
-agent-sync all, and report runtime health.
+structural synchronization, and report runtime health separately.
 EOF
 }
 
@@ -156,7 +156,7 @@ mv "$stage/tool" "$tool"
 mv "$stage/hub" "$hub"
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-if ! "$tool/bin/agent-sync" all; then
+if ! "$tool/bin/agent-sync" sync; then
     exit 1
 fi
 

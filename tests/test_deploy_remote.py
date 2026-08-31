@@ -122,6 +122,15 @@ class DeployRemoteTests(unittest.TestCase):
             self.activation_log.read_text(encoding="utf-8"),
         )
 
+    def test_apply_rolls_back_only_on_structural_sync_failure(self):
+        result = self.run_deploy("mac-mini", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activation = self.activation_log.read_text(encoding="utf-8")
+        self.assertIn('"$tool/bin/agent-sync" sync', activation)
+        self.assertNotIn('"$tool/bin/agent-sync" all', activation)
+        self.assertIn('doctor --runtime\' || true', activation)
+
     def test_apply_refuses_dirty_source_before_ssh_mutation(self):
         (self.hub / "manifest.yaml").write_text("dirty\n", encoding="utf-8")
 
