@@ -159,6 +159,60 @@ class SyncHermesTests(unittest.TestCase):
             self.config.read_text(encoding="utf-8"),
         )
 
+    def test_registers_shared_skills_for_each_hermes_profile(self):
+        self.config.write_text(
+            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            encoding="utf-8",
+        )
+        profile = self.config.parent / "profiles" / "angelina"
+        profile.mkdir(parents=True)
+        profile_config = profile / "config.yaml"
+        profile_config.write_text(
+            "model:\n  provider: example\n"
+            "skills:\n  external_dirs: []\n",
+            encoding="utf-8",
+        )
+        memory = profile / "memories" / "MEMORY.md"
+        memory.parent.mkdir()
+        memory.write_text("private learned experience\n", encoding="utf-8")
+
+        self.run_sync()
+
+        self.assertIn(
+            "    - ~/.agents/skills\n",
+            profile_config.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "model:\n  provider: example\n",
+            profile_config.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            memory.read_text(encoding="utf-8"),
+            "private learned experience\n",
+        )
+        self.assertEqual(self.run_sync("--check").returncode, 0)
+
+    def test_check_reports_profile_drift_without_writing_any_config(self):
+        self.config.write_text(
+            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            encoding="utf-8",
+        )
+        profile = self.config.parent / "profiles" / "angelina"
+        profile.mkdir(parents=True)
+        profile_config = profile / "config.yaml"
+        profile_config.write_text(
+            "skills:\n  external_dirs: []\n",
+            encoding="utf-8",
+        )
+        default_before = self.config.read_bytes()
+        profile_before = profile_config.read_bytes()
+
+        result = self.run_sync("--check", check=False)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.config.read_bytes(), default_before)
+        self.assertEqual(profile_config.read_bytes(), profile_before)
+
     def test_list_honors_custom_hermes_home(self):
         custom_home = self.home / "custom-hermes"
         custom_home.mkdir()

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.1 — 2026-08-31
+
+- Register the shared Skill directory in every detected Hermes profile, not
+  only the default profile, while preserving each profile's native Skills,
+  memories, sessions, schedules, and unrelated configuration.
+- Make Hermes profile drift visible in `--check` and cover the multi-profile
+  behavior with regression tests.
+
 ## 1.12.0 — 2026-08-08
 
 - Add semantic capability ownership so each Agent uses one provider bundle per

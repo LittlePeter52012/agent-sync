@@ -101,7 +101,7 @@ agent-sync verify --strict --scope managed
 | Antigravity IDE | ✓ | ✓ | 共享 | 独立的 IDE 配置与扩展状态 |
 | OpenCode | ✓ | ✓ | — | OpenCode 专属编排继续由产品管理 |
 | VS Code / Copilot | ✓ | ✓ | ✓ | 包括现有 VS Code Profiles |
-| Hermes | ✓ | — | — | 通过原生 `skills.external_dirs` 使用共享 Skills |
+| Hermes | ✓ | — | — | 默认配置及已检测 Profile 均通过原生 `skills.external_dirs` 使用共享 Skills |
 | Multica | 允许列表 | — | 允许列表 | 仅作为可选、显式启用的控制平面适配器 |
 
 “共享”表示 Gemini / Antigravity 系列使用同一个受管理的全局规则面，而不是收到重复规则文件。

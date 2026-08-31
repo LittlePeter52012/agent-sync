@@ -19,6 +19,14 @@ DISPLAY_PATH = "~/.agents/skills"
 TARGET = (HOME / ".agents" / "skills").resolve()
 
 
+def config_paths() -> list[Path]:
+    paths = [CONFIG] if CONFIG.exists() else []
+    profiles = HERMES_HOME / "profiles"
+    if profiles.is_dir():
+        paths.extend(sorted(profiles.glob("*/config.yaml")))
+    return paths
+
+
 def normalized_path(value: str) -> Path | None:
     value = value.strip()
     if not value:
@@ -278,20 +286,28 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
 
-    if not CONFIG.exists():
+    configs = config_paths()
+    if not configs:
         print("[hermes] not configured — skip")
         return 0
 
-    original = CONFIG.read_text(encoding="utf-8")
-    if is_registered(original):
+    drifted: list[tuple[Path, str]] = []
+    for config in configs:
+        original = config.read_text(encoding="utf-8")
+        if not is_registered(original):
+            drifted.append((config, original))
+
+    if not drifted:
         print("[hermes] ✓ shared Skill directory registered")
         return 0
     if args.check:
-        print("[hermes] shared Skill directory is not registered")
+        labels = ", ".join(str(path.relative_to(HERMES_HOME)) for path, _ in drifted)
+        print(f"[hermes] shared Skill directory is not registered: {labels}")
         return 2
 
-    atomic_write(CONFIG, updated_text(original))
-    print("[hermes] + registered ~/.agents/skills")
+    for config, original in drifted:
+        atomic_write(config, updated_text(original))
+    print(f"[hermes] + registered ~/.agents/skills in {len(drifted)} config(s)")
     return 0
 
 
