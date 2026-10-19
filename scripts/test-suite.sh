@@ -116,7 +116,7 @@ import sys
 from pathlib import Path
 hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
-from config_inventory import resolve_mcp_coverage
+from config_inventory import SATISFIED_MCP_STATES, resolve_mcp_coverage
 
 home = Path.home()
 checks = [
@@ -132,7 +132,7 @@ checks = [
     ("Codex", "codex"),
 ]
 fail = 0
-accepted = {"hub-managed", "plugin-owned", "excluded"}
+accepted = SATISFIED_MCP_STATES
 for name, target in checks:
     coverage = resolve_mcp_coverage(target, home, hub)
     have = sum(item["state"] in accepted for item in coverage.values())
