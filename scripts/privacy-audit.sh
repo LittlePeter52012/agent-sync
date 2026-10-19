@@ -13,7 +13,7 @@ ok()   { echo "  OK    $1"; }
 bad()  { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 warn() { echo "  WARN  $1"; WARN=$((WARN+1)); }
 
-TOKEN_RE='eyJ[a-zA-Z0-9_-]{20,}|sk-(proj-)?[a-zA-Z0-9_-]{20,}|gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|tvly-[a-zA-Z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{30,}|Bearer [A-Za-z0-9._~+/=-]{20,}'
+TOKEN_RE='eyJ[a-zA-Z0-9_-]{20,}|(^|[^A-Za-z0-9])sk-(proj-)?[a-zA-Z0-9_-]{20,}|gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|tvly-[a-zA-Z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{30,}|Bearer [A-Za-z0-9._~+/=-]{20,}'
 CURRENT_USER=$(basename "$HOME")
 PII_RE='/Users/[A-Za-z0-9._-]+/|OneDrive-[^/[:space:]]+'
 HISTORY_PII_RE="$PII_RE"
@@ -57,7 +57,7 @@ excluded_files = {
 }
 token = re.compile(
     r"eyJ[a-zA-Z0-9_-]{20,}"
-    r"|sk-(?:proj-)?[a-zA-Z0-9_-]{20,}"
+    r"|(?<![A-Za-z0-9])sk-(?:proj-)?[a-zA-Z0-9_-]{20,}"
     r"|gh[pousr]_[a-zA-Z0-9]{20,}"
     r"|github_pat_[a-zA-Z0-9_]{20,}"
     r"|tvly-[a-zA-Z0-9_-]{8,}"

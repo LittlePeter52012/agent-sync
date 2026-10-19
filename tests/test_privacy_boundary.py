@@ -115,6 +115,34 @@ class PrivacyBoundaryTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("tool contains token-like strings", result.stdout)
 
+    def test_audit_does_not_flag_words_ending_in_sk_as_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            tool = root / "tool"
+            hub = root / "hub"
+            tool.mkdir()
+            (hub / "skills").mkdir(parents=True)
+            (hub / "skills" / "doc.md").write_text(
+                "| get-margin-asset-risk-based-liquidation-ratio | Query ratio |\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [str(AUDIT)],
+                env=os.environ
+                | {
+                    "HOME": str(home),
+                    "AGENT_HUB_ROOT": str(hub),
+                    "AGENT_SYNC_HOME": str(tool),
+                },
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertIn("hub uses placeholders", result.stdout)
+            self.assertNotIn("hub contains raw tokens", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
