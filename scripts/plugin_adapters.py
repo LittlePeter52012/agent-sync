@@ -28,6 +28,8 @@ class PluginDiscovery:
     uncertain: tuple[str, ...] = ()
 
 
+_CODEX_LIST_TIMEOUT = 60
+
 _VERSION_OR_DIST_TAG = re.compile(
     r"^(?:v?\d+(?:[._+-][0-9a-z]+)*|"
     r"latest|next|alpha|beta|canary|dev|nightly|preview|rc)$",
@@ -141,13 +143,14 @@ def _empty_source(
 def _run_json(
     command: list[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
+    timeout: float = 10,
 ) -> Any | None:
     try:
         completed = runner(
             command,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -216,8 +219,11 @@ def _codex(
     declared_ids: frozenset[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> PluginDiscovery:
-    del home
-    payload = _run_json(["codex", "plugin", "list", "--json"], runner)
+    # A cold `codex plugin list` refreshes remote marketplaces and can take
+    # over 30 s; a short timeout reports installed plugins as uncertain.
+    payload = _run_json(
+        ["codex", "plugin", "list", "--json"], runner, timeout=_CODEX_LIST_TIMEOUT
+    )
     records = _records(payload, "installed", "plugins")
     if records is None:
         return PluginDiscovery(uncertain=("codex:plugin-state-uncertain",))
@@ -242,6 +248,13 @@ def _codex(
         ):
             return PluginDiscovery(uncertain=("codex:plugin-state-uncertain",))
         source_info = record.get("source", {})
+        if isinstance(source_info, dict) and source_info.get("source") == "remote":
+            # Remote marketplace plugins run in the product's cloud and ship no
+            # local payload; they are active but expose no local Skills or MCP.
+            sources.append(
+                _empty_source(target, plugin_id, "codex-cli-remote", home / ".codex")
+            )
+            continue
         path = source_info.get("path") if isinstance(source_info, dict) else None
         if not isinstance(path, str) or not Path(path).expanduser().is_dir():
             return PluginDiscovery(uncertain=("codex:plugin-state-uncertain",))

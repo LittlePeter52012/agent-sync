@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.12.3 — 2026-10-19
+
+- Give `codex plugin list` 60 seconds instead of 10 seconds. A cold start
+  refreshes remote marketplaces and can take over 30 seconds, which made Doctor
+  report installed and enabled Codex plugins as uncertain or owner-missing.
+- Treat enabled Codex remote-marketplace plugins as active with no local Skills
+  or MCP, instead of marking all plugin state uncertain because they have no
+  local path.
+- Stop the privacy audit from matching words that end in `sk-` (for example
+  `risk-based`) as API tokens, and make the test suite accept every MCP state
+  that coverage already counts as satisfied.
+
 ## 1.12.2 — 2026-08-31
 
 - Make remote deployment roll back only when structural synchronization fails;

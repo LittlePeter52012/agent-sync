@@ -187,6 +187,64 @@ class PluginAdapterTests(unittest.TestCase):
         self.assertEqual(result.sources, ())
         self.assertEqual(result.uncertain, ())
 
+    def test_codex_plugin_list_allows_slow_cold_start(self):
+        seen = {}
+
+        def runner(command, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return self.completed(command, {"installed": []})
+
+        result = discover_plugins(
+            "codex", self.home, frozenset({"sample@market"}), runner=runner
+        )
+
+        self.assertEqual(result.uncertain, ())
+        self.assertGreaterEqual(seen["timeout"], 60)
+
+    def test_codex_remote_plugin_is_active_without_local_payload(self):
+        root = self.manifest(self.home / "codex-plugin")
+
+        def runner(command, **kwargs):
+            return self.completed(
+                command,
+                {
+                    "installed": [
+                        {
+                            "pluginId": "sample@openai-curated-remote",
+                            "marketplaceName": "openai-curated-remote",
+                            "installed": True,
+                            "enabled": True,
+                            "source": {"source": "remote", "id": "plugin_sample"},
+                        },
+                        {
+                            "pluginId": "local@reviewed-market",
+                            "marketplaceName": "reviewed-market",
+                            "installed": True,
+                            "enabled": True,
+                            "source": {"source": "local", "path": str(root)},
+                        },
+                    ]
+                },
+            )
+
+        result = discover_plugins(
+            "codex",
+            self.home,
+            frozenset({"sample@openai-curated-remote", "local@reviewed-market"}),
+            runner=runner,
+        )
+
+        self.assertEqual(result.uncertain, ())
+        self.assertEqual(
+            [source.plugin_id for source in result.sources],
+            ["sample@openai-curated-remote", "local@reviewed-market"],
+        )
+        remote = result.sources[0]
+        self.assertEqual(remote.evidence, "codex-cli-remote")
+        self.assertEqual(remote.skills, frozenset())
+        self.assertEqual(dict(remote.mcp_servers), {})
+        self.assertEqual(result.sources[1].skills, frozenset({"sample"}))
+
     def test_claude_ignores_disabled_plugin(self):
         root = self.manifest(self.home / "claude-plugin")
 
