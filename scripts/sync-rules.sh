@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
 from rule_blocks import (
+    MARKER_RE,
     MATH_PRIORITY,
     build_managed_block,
     has_terminal_newline,
@@ -156,7 +157,25 @@ for target, _include_priority in target_specs:
     original = read_raw(target)
     parsed = parse_managed_blocks(original, names)
     structural_error = structural_error or bool(parsed.issues)
-    target_inputs[target] = (original, parsed)
+    # Blocks for rules that were removed from the Hub are still managed
+    # output; drop them when they are well formed and do not overlap.
+    blocks = list(parsed.blocks)
+    stale_names = {match.group(2) for match in MARKER_RE.finditer(original)} - names
+    if stale_names:
+        stale = parse_managed_blocks(original, stale_names)
+        overlaps = any(
+            old.start < new.end and new.start < old.end
+            for old in stale.blocks
+            for new in parsed.blocks
+        )
+        if stale.issues or overlaps:
+            print(
+                f"[rules] WARN: left unmatched stale markers in {target}",
+                file=sys.stderr,
+            )
+        else:
+            blocks = sorted(blocks + stale.blocks, key=lambda block: block.start)
+    target_inputs[target] = (original, blocks)
 
 if structural_error:
     print(
@@ -182,9 +201,9 @@ for target, include_priority in target_specs:
     target_input = target_inputs[target]
     if target_input is None:
         continue
-    original, parsed = target_input
+    original, managed_blocks = target_input
     text = original
-    for managed in reversed(parsed.blocks):
+    for managed in reversed(managed_blocks):
         text = join_without_fragment(
             text[:managed.start],
             text[managed.end:],
@@ -235,6 +254,21 @@ except OutputTransactionError as error:
 
 for target, _text in outputs:
     print(f"  ✓ injected → {target}")
+# Copilot gets one generated file per rule; remove the ones whose rule left
+# the Hub. Only files carrying our generated header are touched.
+if copilot_dir.is_dir():
+    suffix = ".instructions.md"
+    for stale in sorted(copilot_dir.glob(f"*{suffix}")):
+        name = stale.name[: -len(suffix)]
+        if name in names or stale.is_symlink() or not stale.is_file():
+            continue
+        header = (
+            f"---\nname: {json.dumps(name, ensure_ascii=False)}\n"
+            "description: Agent rule synced by agent-sync from personal hub.\n"
+        )
+        if read_raw(stale).replace("\r\n", "\n").startswith(header):
+            stale.unlink()
+            print(f"  − removed stale → {stale}")
 for target, _include_priority in target_specs:
     if target_inputs[target] is None:
         print(f"[rules] skip missing: {target}")
