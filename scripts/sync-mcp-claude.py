@@ -160,6 +160,17 @@ def configuration_matches(
     return actual.get("enabled", True) is not False and actual.get("disabled") is not True
 
 
+def restore_server(claude_bin: str, scope: str, name: str, config: dict[str, Any]) -> bool:
+    """Put back the exact entry removed before a failed replacement add."""
+    result = subprocess.run(
+        [claude_bin, "mcp", "add-json", "--scope", scope, name, json.dumps(config)],
+        text=True,
+        stdout=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def command_for(name: str, cfg: dict[str, Any], scope: str, donors: dict[str, str]) -> list[str] | None:
     typ = cfg.get("type", "stdio")
     if typ == "http" or cfg.get("url"):
@@ -263,6 +274,7 @@ def main() -> int:
 
     added = skipped = existing_count = replaced = unchanged = 0
     skipped_names: list[str] = []
+    restore_failed: list[str] = []
     for name, cfg in (canonical.get("mcpServers") or {}).items():
         if name.casefold() in excluded:
             if not dry_run and name.casefold() in existing:
@@ -284,12 +296,20 @@ def main() -> int:
             skipped += 1
             skipped_names.append(name)
             continue
+        snapshot: tuple[str, dict[str, Any]] | None = None
         if name.lower() in existing:
             existing_count += 1
             actual = actual_servers.get(name.casefold())
             if actual and configuration_matches(actual[1], cfg):
                 unchanged += 1
                 continue
+            if actual is None:
+                # Without a snapshot a failed add could not be undone, so
+                # leave the configured server exactly as it is.
+                skipped += 1
+                skipped_names.append(name)
+                continue
+            snapshot = actual
             remove_cmd = [
                 claude_bin,
                 "mcp",
@@ -319,6 +339,10 @@ def main() -> int:
         else:
             skipped += 1
             skipped_names.append(name)
+            if snapshot is not None:
+                replaced -= 1
+                if not restore_server(claude_bin, scope, *snapshot):
+                    restore_failed.append(snapshot[0])
 
     print(
         f"  claude mcp: +{added} replaced={replaced} "
@@ -330,6 +354,13 @@ def main() -> int:
     claude_config = Path.home() / ".claude.json"
     if not dry_run and claude_config.exists():
         claude_config.chmod(0o600)
+    if restore_failed:
+        print(
+            "  ERROR: could not restore after a failed add: "
+            + ", ".join(restore_failed),
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

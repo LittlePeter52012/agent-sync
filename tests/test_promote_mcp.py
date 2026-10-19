@@ -552,6 +552,12 @@ class PromoteMcpTests(unittest.TestCase):
             encoding="utf-8",
         )
         fake_claude.chmod(0o755)
+        # The user-scope entry is the snapshot restored if the new add fails.
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"shared": {"command": "old-command"}}}),
+            encoding="utf-8",
+        )
 
         result = subprocess.run(
             ["python3", str(SYNC_CLAUDE), str(canonical)],
@@ -580,6 +586,12 @@ class PromoteMcpTests(unittest.TestCase):
             encoding="utf-8",
         )
         fake_claude.chmod(0o755)
+        # The user-scope entry is the snapshot restored if the new add fails.
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"MinerU": {"command": "old-command"}}}),
+            encoding="utf-8",
+        )
 
         result = subprocess.run(
             ["python3", str(SYNC_CLAUDE), str(canonical)],
