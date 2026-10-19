@@ -106,7 +106,7 @@ command; use `agent-sync doctor --runtime` for a broader local health report.
 | Antigravity IDE | ✓ | ✓ | shared | Independent IDE configuration and extension state |
 | OpenCode | ✓ | ✓ | — | OpenCode-only orchestration stays product-owned |
 | VS Code / Copilot | ✓ | ✓ | ✓ | Includes existing VS Code Profiles |
-| Hermes | ✓ | — | — | Shared Skills through native `skills.external_dirs` in the default config and detected profiles |
+| Hermes | ✓ | — | — | Own `~/.hermes/hub-skills` target registered through native `skills.external_dirs` in the default config and detected profiles |
 | Multica | allowlist | — | allowlist | Optional, explicit control-plane adapter only |
 
 “Shared” means the Gemini/Antigravity family consumes the single managed global
@@ -244,7 +244,7 @@ upgrade on its own.
 
 ```text
 ~/.config/agent-hub/
-  manifest.yaml              # explicit Skill allowlist
+  manifest.yaml              # explicit Skill allowlist, optional per-target exclusions
   skills/<name>/SKILL.md
   mcp/shared-servers.json    # shared definitions with ${ENV} placeholders
   mcp/retired-servers.json

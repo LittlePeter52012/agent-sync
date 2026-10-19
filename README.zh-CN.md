@@ -101,7 +101,7 @@ agent-sync verify --strict --scope managed
 | Antigravity IDE | ✓ | ✓ | 共享 | 独立的 IDE 配置与扩展状态 |
 | OpenCode | ✓ | ✓ | — | OpenCode 专属编排继续由产品管理 |
 | VS Code / Copilot | ✓ | ✓ | ✓ | 包括现有 VS Code Profiles |
-| Hermes | ✓ | — | — | 默认配置及已检测 Profile 均通过原生 `skills.external_dirs` 使用共享 Skills |
+| Hermes | ✓ | — | — | 使用专属 `~/.hermes/hub-skills`，默认配置及已检测 Profile 均通过原生 `skills.external_dirs` 注册 |
 | Multica | 允许列表 | — | 允许列表 | 仅作为可选、显式启用的控制平面适配器 |
 
 “共享”表示 Gemini / Antigravity 系列使用同一个受管理的全局规则面，而不是收到重复规则文件。
@@ -228,7 +228,7 @@ agent-sync sync
 
 ```text
 ~/.config/agent-hub/
-  manifest.yaml              # 明确的 Skill 允许列表
+  manifest.yaml              # 明确的 Skill 允许列表，可按目标排除
   skills/<name>/SKILL.md
   mcp/shared-servers.json    # 使用 ${ENV} 占位符的共享定义
   mcp/retired-servers.json

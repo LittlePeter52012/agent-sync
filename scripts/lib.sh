@@ -45,4 +45,11 @@ opencode|OpenCode|$HOME/.config/opencode/skills
 copilot|Copilot|$HOME/.copilot/skills
 agents|Agents|$HOME/.agents/skills
 EOF
+    # Hermes gets its own directory (registered by sync_hermes.py), and only
+    # when Hermes is configured, so the Hub never creates a Hermes home.
+    local hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+    case "$hermes_home" in "~/"*) hermes_home="$HOME/${hermes_home#"~/"}" ;; esac
+    if [ -f "$hermes_home/config.yaml" ]; then
+        printf 'hermes|Hermes|%s\n' "$hermes_home/hub-skills"
+    fi
 }

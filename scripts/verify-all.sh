@@ -87,9 +87,11 @@ else:
             if suppressed:
                 ok = not managed
                 suffix = " (duplicate Hub link)" if not ok else ""
+                owner = resolution(target).skill_owners.get(skill)
+                kind = "excluded" if owner == "excluded" else "plugin/policy-owned"
                 print(
                     f"  {'✅' if ok else '❌'} {skill} "
-                    f"plugin/policy-owned @ {label}{suffix}"
+                    f"{kind} @ {label}{suffix}"
                 )
             else:
                 ok = managed
@@ -134,7 +136,7 @@ fi
 echo ""
 echo "[hermes]"
 if [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ]; then
-    check "Hermes uses ~/.agents/skills" "$PY" "$SCRIPT_DIR/sync_hermes.py" --check
+    check "Hermes registers its Hub Skill directory" "$PY" "$SCRIPT_DIR/sync_hermes.py" --check
 else
     echo "  (Hermes not configured — skip)"
 fi

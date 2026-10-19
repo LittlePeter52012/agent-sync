@@ -1,22 +1,73 @@
 #!/usr/bin/env python3
-"""Register Agent Sync's shared Skill directory with Hermes."""
+"""Point Hermes at its own Hub Skill directory.
+
+``sync-skills.sh`` links the Hub Skills meant for Hermes (the manifest
+allowlist minus ``targets.hermes.exclude``) into ``$HERMES_HOME/hub-skills``.
+This script registers that directory in ``skills.external_dirs`` of the
+default config and of every profile.
+
+Older versions registered the shared ``~/.agents/skills`` directory instead.
+That entry is removed only when Hermes loses nothing by it: each entry there
+must be a Hub link now provided through ``hub-skills``, a Hub Skill withheld
+from Hermes that Hermes keeps its own copy of, a Hub link already dropped from
+the manifest, or a non-Hub entry whose Skills Hermes already has. Otherwise the
+entry stays and the script lists what is in the way.
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
 import re
-import tempfile
+import shutil
+import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    from scripts.atomic_file import atomic_write_text
+    from scripts.capability_resolver import resolve_target_policy
+    from scripts.hub_manifest import read_manifest_skills
+except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from atomic_file import atomic_write_text
+    from capability_resolver import resolve_target_policy
+    from hub_manifest import read_manifest_skills
 
 
 HOME = Path.home()
 HERMES_HOME = Path(
     os.environ.get("HERMES_HOME", HOME / ".hermes")
 ).expanduser()
+HUB_ROOT = Path(
+    os.environ.get("AGENT_HUB_ROOT", HOME / ".config" / "agent-hub")
+).expanduser()
 CONFIG = HERMES_HOME / "config.yaml"
-DISPLAY_PATH = "~/.agents/skills"
-TARGET = (HOME / ".agents" / "skills").resolve()
+HUB_SKILLS = HERMES_HOME / "hub-skills"
+SHARED_SKILLS = HOME / ".agents" / "skills"
+SHARED_DISPLAY = "~/.agents/skills"
+RUN_ID = f"{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+
+# Directories Hermes never scans for Skills (agent/skill_utils.py).
+EXCLUDED_SKILL_DIRS = frozenset(
+    {
+        ".git", ".github", ".hub", ".archive", ".curator_backups",
+        ".venv", "venv", "node_modules", "site-packages", "__pycache__",
+    }
+)
+SKILL_SUPPORT_DIRS = frozenset({"references", "templates", "assets", "scripts"})
+
+
+def display_path(path: Path) -> str:
+    try:
+        return "~/" + path.relative_to(HOME).as_posix()
+    except ValueError:
+        return str(path)
+
+
+DISPLAY_PATH = display_path(HUB_SKILLS)
+TARGET = HUB_SKILLS.resolve()
+SHARED_TARGET = SHARED_SKILLS.resolve()
 
 
 def config_paths() -> list[Path]:
@@ -169,20 +220,28 @@ def find_sections(lines: list[str]) -> tuple[int | None, int, int | None]:
     return skills_index, section_end, external_index
 
 
-def is_registered(text: str) -> bool:
+def registered_dirs(text: str) -> list[Path]:
     lines = text.splitlines(keepends=True)
     _, section_end, external_index = find_sections(lines)
     if external_index is None:
-        return False
-    return TARGET in {
+        return []
+    return [
         entry
         for value in external_dir_entries(lines, external_index, section_end)
         if (entry := normalized_path(value)) is not None
-    }
+    ]
 
 
-def updated_text(text: str) -> str:
-    if is_registered(text):
+def is_registered(text: str, target: Path = TARGET) -> bool:
+    return target in registered_dirs(text)
+
+
+def updated_text(
+    text: str,
+    display: str = DISPLAY_PATH,
+    target: Path = TARGET,
+) -> str:
+    if is_registered(text, target):
         return text
 
     lines = text.splitlines(keepends=True)
@@ -192,7 +251,7 @@ def updated_text(text: str) -> str:
         return text + prefix + (
             "skills:\n"
             "  external_dirs:\n"
-            f"    - {DISPLAY_PATH}\n"
+            f"    - {display}\n"
         )
 
     if external_index is None:
@@ -207,7 +266,7 @@ def updated_text(text: str) -> str:
         list_indent = child_indent + "  "
         lines[skills_index + 1 : skills_index + 1] = [
             f"{child_indent}external_dirs:\n",
-            f"{list_indent}- {DISPLAY_PATH}\n",
+            f"{list_indent}- {display}\n",
         ]
         return "".join(lines)
 
@@ -227,7 +286,7 @@ def updated_text(text: str) -> str:
             + (f" {comment}" if comment else "")
             + "\n",
             *[f"{list_indent}- {entry}\n" for entry in flow_entries],
-            f"{list_indent}- {DISPLAY_PATH}\n",
+            f"{list_indent}- {display}\n",
         ]
         return "".join(lines)
     if inline in {"null", "~"}:
@@ -235,7 +294,7 @@ def updated_text(text: str) -> str:
             f"{key_indent}external_dirs:"
             + (f" {comment}" if comment else "")
             + "\n",
-            f"{list_indent}- {DISPLAY_PATH}\n",
+            f"{list_indent}- {display}\n",
         ]
         return "".join(lines)
     if inline:
@@ -244,7 +303,7 @@ def updated_text(text: str) -> str:
             + (f" {comment}" if comment else "")
             + "\n",
             f"{list_indent}- {inline}\n",
-            f"{list_indent}- {DISPLAY_PATH}\n",
+            f"{list_indent}- {display}\n",
         ]
         return "".join(lines)
 
@@ -261,29 +320,243 @@ def updated_text(text: str) -> str:
             continue
         break
     lines[insertion:insertion] = [
-        f"{existing_indent or list_indent}- {DISPLAY_PATH}\n"
+        f"{existing_indent or list_indent}- {display}\n"
     ]
     return "".join(lines)
 
 
-def atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=path.parent,
-        delete=False,
-    ) as handle:
-        handle.write(text)
-        temporary = Path(handle.name)
-    temporary.chmod(mode)
-    temporary.replace(path)
+def without_entry(text: str, target: Path) -> str:
+    """``text`` with every ``external_dirs`` entry that resolves to ``target`` removed."""
+    lines = text.splitlines(keepends=True)
+    _, section_end, external_index = find_sections(lines)
+    if external_index is None:
+        return text
+    match = re.match(
+        r"^(\s+)(external_dirs:)\s*(.*?)\s*(\n?)$",
+        lines[external_index],
+    )
+    assert match is not None
+    key_indent = match.group(1)
+    list_indent = key_indent + "  "
+    inline, comment = split_yaml_comment(match.group(3))
+    suffix = f" {comment}" if comment else ""
+
+    def kept(value: str) -> bool:
+        return normalized_path(value) != target
+
+    if inline and inline not in {"null", "~"}:
+        flow_entries = parse_flow_list(inline)
+        entries = flow_entries if flow_entries is not None else [inline]
+        remaining = [entry for entry in entries if kept(entry)]
+        if len(remaining) == len(entries):
+            return text
+        lines[external_index : external_index + 1] = (
+            [f"{key_indent}external_dirs:{suffix}\n"]
+            + [f"{list_indent}- {entry}\n" for entry in remaining]
+            if remaining
+            else [f"{key_indent}external_dirs: []{suffix}\n"]
+        )
+        return "".join(lines)
+
+    index = external_index + 1
+    removed = False
+    remaining_items = 0
+    while index < section_end:
+        line = lines[index]
+        stripped = line.lstrip()
+        indentation = len(line) - len(stripped)
+        if indentation > len(key_indent) and stripped.startswith("- "):
+            if not kept(stripped[2:].strip()):
+                del lines[index]
+                section_end -= 1
+                removed = True
+                continue
+            remaining_items += 1
+        elif line.strip() and indentation <= len(key_indent):
+            break
+        index += 1
+    if removed and not remaining_items:
+        lines[external_index] = f"{key_indent}external_dirs: []{suffix}\n"
+    return "".join(lines) if removed else text
+
+
+def _declared_name(skill_md: Path) -> str | None:
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    frontmatter = re.match(r"\A---\r?\n(.*?)^---", text, re.DOTALL | re.MULTILINE)
+    if frontmatter is None:
+        return None
+    name = re.search(
+        r"^name:[ \t]*['\"]?([^'\"\r\n]+?)['\"]?[ \t]*\r?$",
+        frontmatter.group(1),
+        re.MULTILINE,
+    )
+    return name.group(1) if name else None
+
+
+def skill_names(root: Path) -> list[tuple[str, frozenset[str]]]:
+    """Every Skill Hermes would find under ``root``: (folder, names it answers to)."""
+    found: list[tuple[str, frozenset[str]]] = []
+    if not root.is_dir():
+        return found
+    seen: set[str] = set()
+    for current, dirs, files in os.walk(root, followlinks=True):
+        real = os.path.realpath(current)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        has_skill = "SKILL.md" in files
+        dirs[:] = sorted(
+            name
+            for name in dirs
+            if name not in EXCLUDED_SKILL_DIRS
+            and not (has_skill and name in SKILL_SUPPORT_DIRS)
+        )
+        if has_skill:
+            folder = Path(current).name
+            declared = _declared_name(Path(current) / "SKILL.md")
+            found.append((folder, frozenset({folder, declared} - {None})))
+    return found
+
+
+def _names_under(roots: list[Path]) -> set[str]:
+    return {
+        name
+        for root in roots
+        for _folder, names in skill_names(root)
+        for name in names
+    }
+
+
+def _hub_managed(link: Path, name: str) -> bool:
+    source = HUB_ROOT / "skills" / name
+    return link.is_symlink() and os.path.realpath(link) == os.path.realpath(source)
+
+
+@dataclass
+class DropReport:
+    """What Hermes would stop seeing if ``~/.agents/skills`` left its config."""
+
+    provided: list[str] = field(default_factory=list)
+    own_copies: list[str] = field(default_factory=list)
+    stale: list[str] = field(default_factory=list)
+    lost: list[str] = field(default_factory=list)
+    withheld_visible: list[str] = field(default_factory=list)
+
+    @property
+    def safe(self) -> bool:
+        return not self.lost
+
+    def summary(self) -> str:
+        parts = [f"{len(self.provided)} now via {DISPLAY_PATH}"]
+        if self.own_copies:
+            parts.append(f"{len(self.own_copies)} Hermes already has")
+        if self.stale:
+            parts.append(f"{len(self.stale)} no longer in the manifest")
+        return ", ".join(parts)
+
+
+def drop_report(config: Path, text: str) -> DropReport:
+    report = DropReport()
+    resolution = resolve_target_policy("hermes", HOME, HUB_ROOT)
+    if resolution.findings:
+        report.lost.extend(
+            f"(Hub policy is invalid: {finding})" for finding in resolution.findings
+        )
+        return report
+    withheld = {
+        skill: resolution.skill_owners.get(skill, "policy")
+        for skill in resolution.suppressed_skills
+    }
+    listed = set(read_manifest_skills(HUB_ROOT / "manifest.yaml"))
+    remaining_dirs = [config.parent / "skills"] + [
+        entry for entry in registered_dirs(text)
+        if entry not in {TARGET, SHARED_TARGET}
+    ]
+    own = _names_under(remaining_dirs)
+    available = own | _names_under([HUB_SKILLS])
+    if not SHARED_SKILLS.is_dir():
+        return report
+    for entry in sorted(SHARED_SKILLS.iterdir(), key=lambda path: path.name):
+        name = entry.name
+        if _hub_managed(entry, name):
+            if _hub_managed(HUB_SKILLS / name, name):
+                report.provided.append(name)
+            elif name.casefold() in withheld:
+                report.withheld_visible.append(name)
+                if name in own:
+                    report.own_copies.append(name)
+                else:
+                    owner = withheld[name.casefold()]
+                    reason = "excluded for Hermes" if owner == "excluded" else f"owned by {owner}"
+                    report.lost.append(f"{name} ({reason}; Hermes has no own copy)")
+            elif name not in listed:
+                report.stale.append(name)
+            else:
+                report.lost.append(f"{name} (not linked in {DISPLAY_PATH} yet)")
+            continue
+        for folder, names in skill_names(entry):
+            label = f"{folder} (from {SHARED_DISPLAY}/{name})"
+            if names & available:
+                report.own_copies.append(label)
+            else:
+                report.lost.append(label)
+    return report
+
+
+def _label(config: Path) -> str:
+    try:
+        return str(config.relative_to(HERMES_HOME))
+    except ValueError:
+        return str(config)
+
+
+def plan(config: Path) -> tuple[str, str, list[str], list[str]]:
+    """(original, updated, actions, warnings) for one Hermes config."""
+    original = config.read_text(encoding="utf-8")
+    updated = original
+    actions: list[str] = []
+    warnings: list[str] = []
+    if not is_registered(updated):
+        updated = updated_text(updated)
+        actions.append(f"registered {DISPLAY_PATH}")
+    if is_registered(updated, SHARED_TARGET):
+        report = drop_report(config, updated)
+        if report.safe:
+            updated = without_entry(updated, SHARED_TARGET)
+            actions.append(f"removed {SHARED_DISPLAY} ({report.summary()})")
+        else:
+            warnings.append(
+                f"kept {SHARED_DISPLAY}; Hermes would lose: " + ", ".join(report.lost)
+            )
+            if report.withheld_visible:
+                warnings.append(
+                    "while it stays, Hermes still sees Hub Skills withheld from it: "
+                    + ", ".join(report.withheld_visible)
+                )
+    return original, updated, actions, warnings
+
+
+def backup(config: Path) -> Path:
+    """Copy ``config`` under the Hub's ``.sync-backups`` before it is replaced."""
+    try:
+        relative = config.relative_to(HERMES_HOME)
+    except ValueError:
+        relative = Path(config.name)
+    destination = HUB_ROOT / ".sync-backups" / RUN_ID / "hermes" / relative
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    shutil.copy2(config, destination)
+    return destination
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="report drift, write nothing")
+    mode.add_argument("--dry-run", action="store_true", help="show planned edits, write nothing")
     args = parser.parse_args()
 
     configs = config_paths()
@@ -291,23 +564,32 @@ def main() -> int:
         print("[hermes] not configured — skip")
         return 0
 
-    drifted: list[tuple[Path, str]] = []
+    drifted: list[tuple[Path, str, list[str]]] = []
     for config in configs:
-        original = config.read_text(encoding="utf-8")
-        if not is_registered(original):
-            drifted.append((config, original))
+        original, updated, actions, warnings = plan(config)
+        for warning in warnings:
+            print(f"[hermes] ⚠ {_label(config)}: {warning}", file=sys.stderr)
+        if updated != original:
+            drifted.append((config, updated, actions))
 
     if not drifted:
-        print("[hermes] ✓ shared Skill directory registered")
+        print(f"[hermes] ✓ {DISPLAY_PATH} registered")
         return 0
     if args.check:
-        labels = ", ".join(str(path.relative_to(HERMES_HOME)) for path, _ in drifted)
-        print(f"[hermes] shared Skill directory is not registered: {labels}")
+        labels = ", ".join(_label(config) for config, _, _ in drifted)
+        print(f"[hermes] Hermes Skill directories need an update: {labels}")
         return 2
 
-    for config, original in drifted:
-        atomic_write(config, updated_text(original))
-    print(f"[hermes] + registered ~/.agents/skills in {len(drifted)} config(s)")
+    for config, updated, actions in drifted:
+        if args.dry_run:
+            for action in actions:
+                print(f"[hermes] (dry-run) {_label(config)}: {action}")
+            continue
+        saved = backup(config)
+        atomic_write_text(config, updated)
+        for action in actions:
+            print(f"[hermes] {_label(config)}: {action}")
+        print(f"[hermes]   backup → {saved}")
     return 0
 
 

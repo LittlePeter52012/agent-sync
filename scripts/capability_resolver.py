@@ -20,12 +20,22 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 try:
+    from scripts.hub_manifest import (
+        ManifestError,
+        read_target_exclusions,
+        unlisted_exclusions,
+    )
     from scripts.plugin_adapters import (
         PluginSource,
         discover_plugins,
         normalize_plugin_id,
     )
 except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from hub_manifest import (
+        ManifestError,
+        read_target_exclusions,
+        unlisted_exclusions,
+    )
     from plugin_adapters import PluginSource, discover_plugins, normalize_plugin_id
 
 
@@ -738,6 +748,19 @@ def resolve_target_policy(
                 suppressed_mcp.add(canonical)
                 mcp_owners[canonical] = "excluded"
 
+    # manifest.yaml `targets.<target>.exclude` narrows one Skill target.
+    try:
+        manifest_exclusions = read_target_exclusions(resolved_hub / "manifest.yaml")
+    except ManifestError as error:
+        findings.append(f"manifest targets section is invalid: {error}")
+        manifest_exclusions = {}
+    for skill in manifest_exclusions.get(
+        target_name, manifest_exclusions.get(target_family, ())
+    ):
+        if skill in skills:
+            suppressed_skills.add(skill)
+            skill_owners[skill] = "excluded"
+
     mcp_collisions.difference_update(suppressed_mcp)
     return TargetResolution(
         suppressed_skills=frozenset(suppressed_skills),
@@ -799,6 +822,15 @@ def main() -> int:
                 ).findings
             }
         )
+        try:
+            findings.extend(
+                f"manifest targets exclude an unlisted Skill: {pair}"
+                for pair in unlisted_exclusions(
+                    args.hub.expanduser() / "manifest.yaml"
+                )
+            )
+        except ManifestError:
+            pass  # Already reported by resolve_target_policy above.
         if findings:
             for finding in findings:
                 print(

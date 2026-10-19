@@ -4,6 +4,13 @@
 version: 1
 name: my-agent-hub
 
+# Optional: withhold allowlisted Skills from one target (it can only narrow,
+# never add). Keep this section above `skills:`.
+# targets:
+#   hermes:
+#     exclude:
+#       - hello-sync
+
 # Skills to sync (folder names under skills/)
 skills:
   - hello-sync

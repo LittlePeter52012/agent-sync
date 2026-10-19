@@ -495,14 +495,13 @@ class AgentDoctorTests(unittest.TestCase):
             messages,
         )
 
-    def test_doctor_reports_hermes_external_shared_skills(self):
-        agents_skill = self.home / ".agents" / "skills" / "example"
-        agents_skill.parent.mkdir(parents=True)
-        agents_skill.symlink_to(self.hub / "skills" / "example")
+    def test_doctor_reports_hermes_hub_skill_target(self):
         hermes = self.home / ".hermes"
-        hermes.mkdir()
+        hub_skill = hermes / "hub-skills" / "example"
+        hub_skill.parent.mkdir(parents=True)
+        hub_skill.symlink_to(self.hub / "skills" / "example")
         (hermes / "config.yaml").write_text(
-            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            "skills:\n  external_dirs:\n    - ~/.hermes/hub-skills\n",
             encoding="utf-8",
         )
 
@@ -534,13 +533,12 @@ class AgentDoctorTests(unittest.TestCase):
         self.assertNotIn("Hermes skill coverage is incomplete", messages)
 
     def test_doctor_honors_custom_hermes_home(self):
-        agents_skill = self.home / ".agents" / "skills" / "example"
-        agents_skill.parent.mkdir(parents=True)
-        agents_skill.symlink_to(self.hub / "skills" / "example")
         custom_home = self.home / "custom-hermes"
-        custom_home.mkdir()
+        hub_skill = custom_home / "hub-skills" / "example"
+        hub_skill.parent.mkdir(parents=True)
+        hub_skill.symlink_to(self.hub / "skills" / "example")
         (custom_home / "config.yaml").write_text(
-            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            "skills:\n  external_dirs:\n    - ~/custom-hermes/hub-skills\n",
             encoding="utf-8",
         )
 
@@ -602,6 +600,10 @@ class AgentDoctorTests(unittest.TestCase):
             shutil.copy2(
                 REPO / "scripts" / "plugin_adapters.py",
                 tool / "scripts" / "plugin_adapters.py",
+            )
+            shutil.copy2(
+                REPO / "scripts" / "hub_manifest.py",
+                tool / "scripts" / "hub_manifest.py",
             )
             (tool / "tests" / "test_import.py").write_text(
                 "from scripts.capability_resolver import McpIdentity\n\n"

@@ -29,6 +29,7 @@ from rule_blocks import (
     parse_managed_blocks,
     source_marker_issues,
 )
+from sync_hermes import HUB_SKILLS as HERMES_HUB_SKILLS
 from sync_hermes import is_registered as hermes_skills_registered
 
 
@@ -1319,25 +1320,6 @@ def application_present(names: tuple[str, ...]) -> bool:
     return any((base / name).exists() for base in (Path("/Applications"), HOME / "Applications") for name in names)
 
 
-def count_skills(path: Path, skills: list[str]) -> dict[str, int]:
-    return {"configured": sum((path / skill / "SKILL.md").exists() for skill in skills), "expected": len(skills)}
-
-
-def count_managed_skills(path: Path, skills: list[str]) -> dict[str, int]:
-    configured = 0
-    for skill in skills:
-        destination = path / skill
-        source = HUB / "skills" / skill
-        if not destination.is_symlink():
-            continue
-        try:
-            if destination.resolve() == source.resolve():
-                configured += 1
-        except (OSError, RuntimeError):
-            continue
-    return {"configured": configured, "expected": len(skills)}
-
-
 def effective_skill_counts(
     target: str,
     path: Path,
@@ -1501,23 +1483,23 @@ def target_records(
             hermes_config.read_text(encoding="utf-8")
         )
     )
-    hermes_skills = HOME / ".agents" / "skills"
+    if hermes_registered:
+        hermes_skills, hermes_managed = effective_skill_counts(
+            "hermes",
+            HERMES_HUB_SKILLS,
+            skills,
+        )
+    else:
+        hermes_skills = {"configured": 0, "expected": len(skills)}
+        hermes_managed = {"configured": 0, "expected": len(skills)}
     records.append(
         {
             "name": "Hermes",
             "cli_present": bool(shutil.which("hermes")),
             "application_present": False,
             "config_present": True,
-            "skills": (
-                count_skills(hermes_skills, skills)
-                if hermes_registered
-                else {"configured": 0, "expected": len(skills)}
-            ),
-            "managed_skills": (
-                count_managed_skills(hermes_skills, skills)
-                if hermes_registered
-                else {"configured": 0, "expected": len(skills)}
-            ),
+            "skills": hermes_skills,
+            "managed_skills": hermes_managed,
             "mcp": {"configured": 0, "expected": 0},
             "models": [],
             "capabilities": (

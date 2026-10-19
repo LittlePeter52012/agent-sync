@@ -44,7 +44,7 @@ class SyncHermesTests(unittest.TestCase):
             check=check,
         )
 
-    def test_adds_agents_skills_to_empty_external_dirs(self):
+    def test_adds_hub_skills_to_empty_external_dirs(self):
         self.config.write_text(
             "model:\n  default: example\nskills:\n  external_dirs: []\n",
             encoding="utf-8",
@@ -53,7 +53,7 @@ class SyncHermesTests(unittest.TestCase):
         self.run_sync()
 
         text = self.config.read_text(encoding="utf-8")
-        self.assertIn("  external_dirs:\n    - ~/.agents/skills\n", text)
+        self.assertIn("  external_dirs:\n    - ~/.hermes/hub-skills\n", text)
         self.assertIn("model:\n  default: example\n", text)
         self.assertEqual(self.run_sync("--check").returncode, 0)
 
@@ -72,7 +72,7 @@ class SyncHermesTests(unittest.TestCase):
         twice = self.config.read_text(encoding="utf-8")
 
         self.assertIn("    - ~/shared/team-skills\n", once)
-        self.assertIn("    - ~/.agents/skills\n", once)
+        self.assertIn("    - ~/.hermes/hub-skills\n", once)
         self.assertEqual(once, twice)
 
     def test_normalizes_inline_flow_list_without_creating_nested_list(self):
@@ -88,7 +88,7 @@ class SyncHermesTests(unittest.TestCase):
         text = self.config.read_text(encoding="utf-8")
         self.assertIn("    - ~/shared/one\n", text)
         self.assertIn("    - '~/shared/two'\n", text)
-        self.assertIn("    - ~/.agents/skills\n", text)
+        self.assertIn("    - ~/.hermes/hub-skills\n", text)
         self.assertNotIn("- [~/shared/one", text)
         self.assertEqual(self.run_sync("--check").returncode, 0)
 
@@ -105,7 +105,7 @@ class SyncHermesTests(unittest.TestCase):
         text = self.config.read_text(encoding="utf-8")
         self.assertIn(
             "  external_dirs: # managed by Hermes\n"
-            "    - ~/.agents/skills\n",
+            "    - ~/.hermes/hub-skills\n",
             text,
         )
         self.assertNotIn("    - []", text)
@@ -124,7 +124,7 @@ class SyncHermesTests(unittest.TestCase):
         text = self.config.read_text(encoding="utf-8")
         self.assertEqual(text.count("external_dirs:"), 1)
         self.assertIn("        - ~/shared/team-skills\n", text)
-        self.assertIn("        - ~/.agents/skills\n", text)
+        self.assertIn("        - ~/.hermes/hub-skills\n", text)
         self.assertEqual(self.run_sync("--check").returncode, 0)
 
     def test_check_reports_drift_without_writing(self):
@@ -153,15 +153,15 @@ class SyncHermesTests(unittest.TestCase):
             check=True,
         )
 
-        self.assertIn("registered ~/.agents/skills", result.stdout)
+        self.assertIn("registered ~/.hermes/hub-skills", result.stdout)
         self.assertIn(
-            "    - ~/.agents/skills\n",
+            "    - ~/.hermes/hub-skills\n",
             self.config.read_text(encoding="utf-8"),
         )
 
-    def test_registers_shared_skills_for_each_hermes_profile(self):
+    def test_registers_hub_skills_for_each_hermes_profile(self):
         self.config.write_text(
-            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            "skills:\n  external_dirs:\n    - ~/.hermes/hub-skills\n",
             encoding="utf-8",
         )
         profile = self.config.parent / "profiles" / "angelina"
@@ -179,7 +179,7 @@ class SyncHermesTests(unittest.TestCase):
         self.run_sync()
 
         self.assertIn(
-            "    - ~/.agents/skills\n",
+            "    - ~/.hermes/hub-skills\n",
             profile_config.read_text(encoding="utf-8"),
         )
         self.assertIn(
@@ -194,7 +194,7 @@ class SyncHermesTests(unittest.TestCase):
 
     def test_check_reports_profile_drift_without_writing_any_config(self):
         self.config.write_text(
-            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            "skills:\n  external_dirs:\n    - ~/.hermes/hub-skills\n",
             encoding="utf-8",
         )
         profile = self.config.parent / "profiles" / "angelina"
@@ -217,7 +217,7 @@ class SyncHermesTests(unittest.TestCase):
         custom_home = self.home / "custom-hermes"
         custom_home.mkdir()
         (custom_home / "config.yaml").write_text(
-            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+            "skills:\n  external_dirs:\n    - ~/custom-hermes/hub-skills\n",
             encoding="utf-8",
         )
         env = self.env | {"HERMES_HOME": str(custom_home)}

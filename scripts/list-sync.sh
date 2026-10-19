@@ -36,6 +36,7 @@ hub = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
 from capability_resolver import resolve_target_policy
 from config_inventory import SATISFIED_MCP_STATES, resolve_mcp_coverage
+from sync_hermes import HUB_SKILLS as hermes_hub_skills
 from sync_hermes import is_registered as hermes_skills_registered
 
 manifest = (hub / "manifest.yaml").read_text()
@@ -77,7 +78,7 @@ if (
     hermes_config.exists()
     and hermes_skills_registered(hermes_config.read_text())
 ):
-    skill_targets["Hermes"] = ("agents", Path.home()/".agents/skills")
+    skill_targets["Hermes"] = ("hermes", hermes_hub_skills)
 
 @lru_cache(maxsize=None)
 def target_resolution(target: str):

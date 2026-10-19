@@ -64,6 +64,10 @@ check_skills_dir "Antigravity IDE" "antigravity-ide" "$HOME/.gemini/antigravity-
 check_skills_dir "OpenCode" "opencode" "$HOME/.config/opencode/skills"
 check_skills_dir "Copilot" "copilot" "$HOME/.copilot/skills"
 check_skills_dir "Agents" "agents" "$HOME/.agents/skills"
+HERMES_TARGET=$(skill_target_specs | awk -F'|' '$1 == "hermes" {print $3}')
+if [ -n "$HERMES_TARGET" ]; then
+  check_skills_dir "Hermes" "hermes" "$HERMES_TARGET"
+fi
 if [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ]; then
   if "$PY" "$SCRIPT_DIR/sync_hermes.py" --check >/dev/null; then
     ok "Hermes external Skills"
@@ -107,6 +111,9 @@ check_links "Antigravity IDE" "antigravity-ide" "$HOME/.gemini/antigravity-ide/s
 check_links "OpenCode" "opencode" "$HOME/.config/opencode/skills"
 check_links "Copilot" "copilot" "$HOME/.copilot/skills"
 check_links "Agents" "agents" "$HOME/.agents/skills"
+if [ -n "$HERMES_TARGET" ]; then
+  check_links "Hermes" "hermes" "$HERMES_TARGET"
+fi
 
 echo ""
 echo "[4] MCP (if hub defines shared servers)"

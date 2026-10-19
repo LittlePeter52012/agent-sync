@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.13.0 — 2026-10-19
+
+- Give Hermes its own Skill target, `$HERMES_HOME/hub-skills`, instead of the
+  shared `~/.agents/skills` directory, so whatever other tools place there no
+  longer reaches Hermes and name collisions with Hermes' own Skills can be
+  avoided. Other tools keep using `~/.agents/skills` unchanged.
+- Add an optional `targets.<target>.exclude` list to the Hub manifest that
+  withholds allowlisted Skills from one target. The parser is strict, and an
+  invalid section stops synchronization before anything changes.
+- `agent-sync hermes` registers the new directory in the default config and in
+  every profile, backs each config up under `.sync-backups/` before an atomic
+  rewrite, and accepts `--dry-run`. It removes the old `~/.agents/skills`
+  entry only when Hermes would lose nothing; otherwise it keeps the entry and
+  lists what is in the way.
+- Status, verify, Doctor and the evaluation suite count Hermes against its own
+  target: the allowlist minus its exclusions.
+
 ## 1.12.3 — 2026-10-19
 
 - Give `codex plugin list` 60 seconds instead of 10 seconds. A cold start

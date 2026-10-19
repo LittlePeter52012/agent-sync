@@ -41,9 +41,9 @@ remove_suppressed_hub_link() {
     local dest="$target_dir/$skill_name"
     if skill_is_hub_managed "$dest" "$source"; then
         [ "$DRY_RUN" = false ] && rm "$dest"
-        log "  ⊘ $skill_name @ ${target_dir##*/} (product plugin/policy owns it)"
+        log "  ⊘ $skill_name @ ${target_dir##*/} (withheld by a product plugin, policy or manifest exclusion)"
     else
-        log "  ⊘ $skill_name @ ${target_dir##*/} (product plugin/policy owns it)"
+        log "  ⊘ $skill_name @ ${target_dir##*/} (withheld by a product plugin, policy or manifest exclusion)"
     fi
 }
 
