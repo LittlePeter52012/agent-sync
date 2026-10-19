@@ -242,6 +242,17 @@ agent-sync sync
 - `AGENT_HUB_ROOT` — 私有 Hub 路径，默认为 `~/.config/agent-hub`
 - `AGENT_SYNC_HOME` — 工具安装路径，通常自动检测
 
+## 相关项目
+
+| 仓库 | 可见性 | 作用 |
+|---|---|---|
+| `agent-sync`（本仓库） | 公开 | 同步器：读取 Hub，写入各 Agent 的 Skills、MCP 与规则 |
+| 你的 Hub，例如 `~/.config/agent-hub` | 私有 | 期望状态：Skill 白名单、共享 MCP 定义、规则、归属策略 |
+| [skill-router](https://github.com/LittlePeter52012/skill-router)（`skrt`） | 公开 | 可选：索引各 Agent 的 Skill 目录，按请求返回最匹配的 Skill |
+
+agent-sync 不保存任何 Hub 内容，Hub 应放在私有仓库。skrt 不需要访问 Hub：
+agent-sync 把 Hub 的 Skills 链接到 `~/.agents/skills` 等目录后，skrt 直接读取这些目录。
+
 ## 参与贡献
 
 请让公开变更保持通用且可复现。发布前运行 `agent-sync test` 和 `agent-sync audit`。

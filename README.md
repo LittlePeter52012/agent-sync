@@ -258,6 +258,18 @@ Environment variables:
 - `AGENT_HUB_ROOT` — private Hub path, default `~/.config/agent-hub`
 - `AGENT_SYNC_HOME` — tool installation path, normally auto-detected
 
+## Related projects
+
+| Repository | Visibility | Role |
+|---|---|---|
+| `agent-sync` (this repository) | Public | Synchronizer: reads a Hub and writes each agent's Skills, MCP servers, and rules |
+| Your Hub, e.g. `~/.config/agent-hub` | Private | Desired state: Skill allowlist, shared MCP definitions, rules, ownership policy |
+| [skill-router](https://github.com/LittlePeter52012/skill-router) (`skrt`) | Public | Optional: indexes the agents' Skill directories and returns the best matches for a request |
+
+agent-sync never stores Hub content, so keep your Hub in a private repository.
+skrt needs no Hub access: it reads the Skill directories, such as
+`~/.agents/skills`, after agent-sync has linked the Hub's Skills there.
+
 ## Contributing
 
 Keep public changes generic and reproducible. Run `agent-sync test` and
