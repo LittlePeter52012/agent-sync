@@ -8,10 +8,11 @@ import json
 import os
 import re
 import sys
-import tempfile
 import argparse
 from pathlib import Path
 from typing import Any
+
+from atomic_file import atomic_write_text
 
 
 PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
@@ -56,6 +57,63 @@ def parse_servers(text: str) -> dict[str, dict[str, Any]]:
         else:
             current[key] = parse_value(raw)
     return servers
+
+
+# Keys this script renders itself. Anything else on a server table (enabled,
+# startup_timeout_sec, enabled_tools, ...) is Codex-side state and is kept.
+RENDERED_KEYS = {"command", "args", "url", "type", "env", "headers", "http_headers"}
+
+
+def _open_brackets(raw: str) -> int:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for char in raw:
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+        elif char == "#":
+            break
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+    return depth
+
+
+def extra_server_lines(text: str) -> dict[str, list[str]]:
+    """Raw top-level lines of each server table that are not rendered here."""
+    extras: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    depth = 0
+    for line in text.splitlines():
+        if depth > 0 and current is not None:
+            current.append(line)
+            depth += _open_brackets(line)
+            continue
+        table = TABLE_RE.match(line)
+        if table:
+            name, section = table.groups()
+            current = None if section else extras.setdefault(name.lower(), [])
+            continue
+        if ANY_TABLE_RE.match(line):
+            current = None
+            continue
+        if current is None or "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, raw = line.split("=", 1)
+        if key.strip().strip("\"'") in RENDERED_KEYS:
+            continue
+        current.append(line.strip())
+        depth = _open_brackets(raw)
+    return extras
 
 
 def remove_server_blocks(text: str, names: set[str]) -> str:
@@ -109,7 +167,12 @@ def resolve(value: Any, mapping: dict[str, str], existing: Any = None) -> Any | 
     return value
 
 
-def render_server(name: str, template: dict[str, Any], existing: dict[str, Any]) -> str:
+def render_server(
+    name: str,
+    template: dict[str, Any],
+    existing: dict[str, Any],
+    extra_lines: list[str] | None = None,
+) -> str:
     mapping = mapping_for(template, existing)
     lines = [f"[mcp_servers.{name}]"]
     typ = template.get("type", "stdio")
@@ -117,7 +180,9 @@ def render_server(name: str, template: dict[str, Any], existing: dict[str, Any])
         url = resolve(template.get("url"), mapping, existing.get("url"))
         if not url:
             raise ValueError(f"unresolved URL for {name}")
-        lines.extend((f'url = "{toml_escape(str(url))}"', ""))
+        lines.append(f'url = "{toml_escape(str(url))}"')
+        lines.extend(extra_lines or [])
+        lines.append("")
         headers: dict[str, Any] = {}
         existing_headers = existing.get("headers", {}) or existing.get("http_headers", {})
         for key, value in (template.get("headers") or {}).items():
@@ -152,7 +217,9 @@ def render_server(name: str, template: dict[str, Any], existing: dict[str, Any])
         if resolved is not None:
             args.append(resolved)
     args_text = ", ".join(f'"{toml_escape(str(value))}"' for value in args)
-    lines.extend((f"args = [{args_text}]", ""))
+    lines.append(f"args = [{args_text}]")
+    lines.extend(extra_lines or [])
+    lines.append("")
 
     env: dict[str, Any] = {}
     existing_env = existing.get("env", {}) if isinstance(existing.get("env"), dict) else {}
@@ -170,13 +237,8 @@ def render_server(name: str, template: dict[str, Any], existing: dict[str, Any])
 
 
 def atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
-    ) as handle:
-        handle.write(text)
-        tmp = Path(handle.name)
-    tmp.replace(path)
+    # Follows a symlinked config, keeps the file mode, fsyncs before replace.
+    atomic_write_text(path, text, default_mode=0o600)
 
 
 def main() -> int:
@@ -197,10 +259,13 @@ def main() -> int:
     target = args.target.expanduser()
     text = target.read_text(encoding="utf-8") if target.exists() else ""
     existing = parse_servers(text)
+    extras = extra_server_lines(text)
     names = {name.lower() for name in templates}
     base = remove_server_blocks(text, names) if text else ""
     blocks = [
-        render_server(name, cfg, existing.get(name.lower(), {}))
+        render_server(
+            name, cfg, existing.get(name.lower(), {}), extras.get(name.lower())
+        )
         for name, cfg in templates.items()
         if name.casefold() not in excluded
     ]

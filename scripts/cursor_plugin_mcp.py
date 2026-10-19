@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from atomic_file import atomic_write_text
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -68,9 +70,9 @@ def prune_shadowed(
         return []
     for name in removed:
         servers.pop(name, None)
-    target_path.write_text(
+    atomic_write_text(
+        target_path,
         json.dumps(document, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
     return sorted(removed, key=str.casefold)
 

@@ -20,6 +20,12 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+try:
+    from atomic_file import atomic_write_text
+except ImportError:  # loaded by path (mcp-deps smoke) without scripts/ on sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from atomic_file import atomic_write_text
+
 
 def donor_paths() -> list[Path]:
     home = Path.home()
@@ -60,7 +66,16 @@ def collect_donors() -> dict[str, dict[str, Any]]:
     """Lowercase name -> best donor server config."""
     out: dict[str, dict[str, Any]] = {}
     for donor in donor_paths():
-        for name, cfg in extract_servers(load_json(donor)).items():
+        try:
+            document = load_json(donor)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            # An unreadable donor (e.g. a commented VS Code mcp.json) only
+            # loses its donations; it must not fail every other target.
+            print(f"  ! skipped unreadable donor {donor}", file=sys.stderr)
+            continue
+        if not isinstance(document, dict):
+            continue
+        for name, cfg in extract_servers(document).items():
             key = name.lower()
             # Prefer configs that already have concrete secrets/paths
             if key not in out:
@@ -409,8 +424,7 @@ def merge_into(
         else:
             stats["unchanged"] += 1
 
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(target_path, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     if has_concrete_sensitive_values(doc):
         target_path.chmod(0o600)
     return stats

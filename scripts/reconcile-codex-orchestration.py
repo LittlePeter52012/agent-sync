@@ -7,9 +7,10 @@ import argparse
 import json
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from atomic_file import atomic_write_text
 
 
 class ReconcileError(RuntimeError):
@@ -203,18 +204,8 @@ def reconcile(
 
 
 def atomic_write(path: Path, text: str) -> None:
-    mode = path.stat().st_mode
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        delete=False,
-    ) as handle:
-        handle.write(text)
-        temporary = Path(handle.name)
-    os.chmod(temporary, mode)
-    temporary.replace(path)
+    # Follows a symlinked config, keeps the file mode, fsyncs before replace.
+    atomic_write_text(path, text, default_mode=0o600)
 
 
 def main() -> int:

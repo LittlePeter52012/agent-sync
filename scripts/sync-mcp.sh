@@ -27,7 +27,7 @@ prepare_antigravity_cache() {
                 return 1
                 ;;
         esac
-        mkdir -p "$root/mcp/$server"
+        mkdir -p "$root/mcp/$server" || return 1
     done < <(python3 - "$config" <<'PY'
 import json
 import sys
@@ -62,6 +62,49 @@ TARGETS=(
     "opencode|OpenCode|$HOME/.config/opencode/opencode.json"
 )
 
+# One failing target must not stop the others: each target runs as a unit
+# that stops at its own first failure, and the failures are reported at the end.
+FAILED_TARGETS=()
+EXCLUDED_FILE=""
+trap 'rm -f "${EXCLUDED_FILE:-}"' EXIT
+
+new_excluded_file() {
+    rm -f "${EXCLUDED_FILE:-}"
+    EXCLUDED_FILE=$(mktemp)
+}
+
+sync_json_target() {
+    local target_key="$1" label="$2" target="$3"
+    new_excluded_file || return 1
+    python3 "$CAPABILITY_RESOLVER" \
+        --home "$HOME" \
+        --hub "$HUB_ROOT" \
+        suppressed-mcp "$target_key" > "$EXCLUDED_FILE" || return 1
+    if [ "${PRUNE_ALIASES:-1}" = 1 ]; then
+        python3 "$PRUNE_ALIASES_PY" "$CANONICAL" "$target" || return 1
+    fi
+    python3 "$PRUNE_PY" "$RETIRED" "$target" || return 1
+    python3 "$MERGE_PY" \
+        "$CANONICAL" "$target" \
+        --exclude-file "$EXCLUDED_FILE" \
+        --hub "$HUB_ROOT" \
+        --target-key "$target_key" || return 1
+    case "$label" in
+        "Antigravity App"|"Antigravity CLI"|"Antigravity IDE")
+            prepare_antigravity_cache "$target" || return 1
+            ;;
+    esac
+}
+
+run_target() {
+    local label="$1"
+    shift
+    if ! "$@"; then
+        echo "  ✗ $label failed; continuing with the remaining targets" >&2
+        FAILED_TARGETS+=("$label")
+    fi
+}
+
 echo "━━━ agent-sync MCP merge ━━━"
 echo "  Canonical: $CANONICAL"
 echo ""
@@ -72,26 +115,7 @@ for entry in "${TARGETS[@]}"; do
     label="${remainder%%|*}"
     target="${remainder#*|}"
     echo "[mcp] → $label ($target)"
-    excluded_file=$(mktemp)
-    trap 'rm -f "$excluded_file"' EXIT
-    python3 "$CAPABILITY_RESOLVER" \
-        --home "$HOME" \
-        --hub "$HUB_ROOT" \
-        suppressed-mcp "$target_key" > "$excluded_file"
-    python3 "$PRUNE_ALIASES_PY" "$CANONICAL" "$target"
-    python3 "$PRUNE_PY" "$RETIRED" "$target"
-    python3 "$MERGE_PY" \
-        "$CANONICAL" "$target" \
-        --exclude-file "$excluded_file" \
-        --hub "$HUB_ROOT" \
-        --target-key "$target_key"
-    case "$label" in
-        "Antigravity App"|"Antigravity CLI"|"Antigravity IDE")
-            prepare_antigravity_cache "$target"
-            ;;
-    esac
-    rm -f "$excluded_file"
-    trap - EXIT
+    PRUNE_ALIASES=1 run_target "$label" sync_json_target "$target_key" "$label" "$target"
 done
 
 VSCODE_PROFILES="$HOME/Library/Application Support/Code/User/profiles"
@@ -99,51 +123,48 @@ if [ -d "$VSCODE_PROFILES" ]; then
     while IFS= read -r profile; do
         target="$profile/mcp.json"
         echo "[mcp] → VSCode profile ($(basename "$profile")) ($target)"
-        excluded_file=$(mktemp)
-        trap 'rm -f "$excluded_file"' EXIT
-        python3 "$CAPABILITY_RESOLVER" \
-            --home "$HOME" \
-            --hub "$HUB_ROOT" \
-            suppressed-mcp "vscode:$(basename "$profile")" > "$excluded_file"
-        python3 "$PRUNE_PY" "$RETIRED" "$target"
-        python3 "$MERGE_PY" \
-            "$CANONICAL" "$target" \
-            --exclude-file "$excluded_file" \
-            --hub "$HUB_ROOT" \
-            --target-key "vscode:$(basename "$profile")"
-        rm -f "$excluded_file"
-        trap - EXIT
+        PRUNE_ALIASES=0 run_target "VSCode profile $(basename "$profile")" \
+            sync_json_target "vscode:$(basename "$profile")" "VSCode profile" "$target"
     done < <(find "$VSCODE_PROFILES" -mindepth 1 -maxdepth 1 -type d | sort)
 fi
 
+sync_codex() {
+    new_excluded_file || return 1
+    python3 "$CAPABILITY_RESOLVER" \
+        --home "$HOME" \
+        --hub "$HUB_ROOT" \
+        suppressed-mcp codex > "$EXCLUDED_FILE" || return 1
+    python3 "$PRUNE_PY" "$RETIRED" "$HOME/.codex/config.toml" || return 1
+    python3 "$MERGE_CODEX" \
+        "$CANONICAL" "$HOME/.codex/config.toml" \
+        --exclude-file "$EXCLUDED_FILE" || return 1
+}
+
+sync_claude() {
+    new_excluded_file || return 1
+    python3 "$CAPABILITY_RESOLVER" \
+        --home "$HOME" \
+        --hub "$HUB_ROOT" \
+        suppressed-mcp claude > "$EXCLUDED_FILE" || return 1
+    python3 "$MERGE_CLAUDE" \
+        "$CANONICAL" \
+        --retired "$RETIRED" \
+        --exclude-file "$EXCLUDED_FILE" \
+        --hub "$HUB_ROOT" || return 1
+}
+
 echo "[mcp] → Codex ($HOME/.codex/config.toml)"
-CODEX_EXCLUDED=$(mktemp)
-trap 'rm -f "$CODEX_EXCLUDED"' EXIT
-python3 "$CAPABILITY_RESOLVER" \
-    --home "$HOME" \
-    --hub "$HUB_ROOT" \
-    suppressed-mcp codex > "$CODEX_EXCLUDED"
-python3 "$PRUNE_PY" "$RETIRED" "$HOME/.codex/config.toml"
-python3 "$MERGE_CODEX" \
-    "$CANONICAL" "$HOME/.codex/config.toml" \
-    --exclude-file "$CODEX_EXCLUDED"
-rm -f "$CODEX_EXCLUDED"
-trap - EXIT
+run_target "Codex" sync_codex
 
 echo "[mcp] → Claude Code (claude mcp, user scope)"
-CLAUDE_EXCLUDED=$(mktemp)
-trap 'rm -f "$CLAUDE_EXCLUDED"' EXIT
-python3 "$CAPABILITY_RESOLVER" \
-    --home "$HOME" \
-    --hub "$HUB_ROOT" \
-    suppressed-mcp claude > "$CLAUDE_EXCLUDED"
-python3 "$MERGE_CLAUDE" \
-    "$CANONICAL" \
-    --retired "$RETIRED" \
-    --exclude-file "$CLAUDE_EXCLUDED" \
-    --hub "$HUB_ROOT"
-rm -f "$CLAUDE_EXCLUDED"
-trap - EXIT
+run_target "Claude Code" sync_claude
 
 echo ""
+if [ "${#FAILED_TARGETS[@]}" -gt 0 ]; then
+    echo "  ✗ MCP sync failed for ${#FAILED_TARGETS[@]} target(s):" >&2
+    for label in "${FAILED_TARGETS[@]}"; do
+        echo "    - $label" >&2
+    done
+    exit 1
+fi
 echo "  Shared MCP structure converged; local secrets and tool-only servers preserved."

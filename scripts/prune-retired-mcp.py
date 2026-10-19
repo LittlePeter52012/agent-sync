@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from atomic_file import atomic_write_text
 
 
 MCP_TABLE_RE = re.compile(r"^\s*\[mcp_servers\.([^\.\]\s]+)(?:\.[^\]]+)?\]\s*$")
@@ -25,15 +25,8 @@ def read_retired(path: Path) -> set[str]:
 
 
 def atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
-    ) as handle:
-        os.fchmod(handle.fileno(), mode)
-        handle.write(text)
-        tmp = Path(handle.name)
-    tmp.replace(path)
+    # Follows a symlinked config, keeps the file mode, fsyncs before replace.
+    atomic_write_text(path, text, default_mode=0o600)
 
 
 def prune_json(path: Path, retired: set[str]) -> int:

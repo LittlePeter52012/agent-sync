@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from atomic_file import atomic_write_text
 
 
 BUCKETS = ("mcpServers", "mcp", "servers")
@@ -26,22 +26,12 @@ def load_object(path: Path) -> dict[str, Any]:
 
 
 def write_atomic(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        dir=path.parent,
-        text=True,
+    # Follows a symlinked config, keeps the file mode, fsyncs before replace.
+    atomic_write_text(
+        path,
+        json.dumps(value, indent=2, ensure_ascii=False) + "\n",
+        default_mode=0o600,
     )
-    try:
-        os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
 
 
 def fill_missing(primary: Any, fallback: Any) -> Any:
