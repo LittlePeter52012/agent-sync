@@ -242,6 +242,33 @@ agent-sync sync
 - `AGENT_HUB_ROOT` — 私有 Hub 路径，默认为 `~/.config/agent-hub`
 - `AGENT_SYNC_HOME` — 工具安装路径，通常自动检测
 
+## 本机策略
+
+有些决定只属于某一台机器，而不属于 Hub。`~/.config/agent-sync/host-policy.json`
+可以只在本机为指定目标停用某项 Hub 能力，例如 Hub 选定的产品插件在这台机器上没有安装，
+而这里又不希望退回 Hub MCP。该文件位于 Hub 与工具目录之外，因此不会被分发，
+`agent-sync deploy` 也不会携带或覆盖它。示例见
+[`examples/host-policy.json`](examples/host-policy.json)：
+
+```json
+{
+  "schema_version": 1,
+  "capability_ownership": {
+    "capabilities": {
+      "<capability>": {
+        "targets": {
+          "<target>": { "selection": "disabled", "reason": "<原因>" }
+        }
+      }
+    }
+  }
+}
+```
+
+目前只支持 `"selection": "disabled"`，`reason` 必填，且能力名必须存在于 Hub 策略中。
+这些目标会解析为带原因的 `disabled-on-host`，sync、verify 与 Doctor 都视为已满足。
+文件无效时，`agent-sync sync` 会在改动任何内容之前停止。
+
 ## 相关项目
 
 | 仓库 | 可见性 | 作用 |

@@ -1616,6 +1616,7 @@ def effective_mcp_findings(
         "target-owned",
         "excluded",
         "disabled-by-policy",
+        "disabled-on-host",
         "ownership-conflict",
         "owner-missing",
     }

@@ -36,6 +36,7 @@ SATISFIED_MCP_STATES = frozenset(
         "target-owned",
         "excluded",
         "disabled-by-policy",
+        "disabled-on-host",
     }
 )
 
@@ -361,12 +362,15 @@ def resolve_mcp_coverage(
             "ownership-conflict",
             "owner-missing",
             "disabled-by-policy",
+            "disabled-on-host",
             "target-owned",
         }:
             coverage[name] = {
                 "state": capability.state,
                 "owner": capability.desired_owner,
             }
+            if capability.state == "disabled-on-host":
+                coverage[name]["reason"] = capability.reason
             continue
         owner = resolution.mcp_owners.get(key)
         if key in resolution.suppressed_mcp:

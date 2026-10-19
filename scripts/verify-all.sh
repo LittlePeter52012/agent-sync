@@ -39,13 +39,14 @@ sys.path.insert(0, sys.argv[2])
 target_file = Path(sys.argv[3])
 skills_file = Path(sys.argv[4])
 
-from capability_resolver import resolve_target_policy
+from capability_resolver import host_policy_status, resolve_target_policy
 from config_inventory import (
     SATISFIED_MCP_STATES,
     _source_specs,
     read_canonical_shared_mcp,
     resolve_mcp_coverage,
 )
+from host_policy import host_policy_path
 
 home = Path.home()
 skills = [
@@ -72,7 +73,17 @@ def hub_managed(destination, source):
     )
 
 failures = 0
-print("[skills]")
+print("[host policy]")
+override_count, host_issue = host_policy_status(home, hub)
+if host_issue:
+    print(f"  ❌ {host_issue}")
+    failures += 1
+elif override_count:
+    print(f"  ✅ {override_count} override(s) in {host_policy_path(home)}")
+else:
+    print("  ✅ none")
+
+print("\n[skills]")
 if not skills:
     print("  (no shared Skills — skip)")
 else:
@@ -122,6 +133,8 @@ else:
         for name, record in coverage.items():
             if record["state"] not in SATISFIED_MCP_STATES:
                 print(f"      - {name}: {record['state']}")
+            elif record["state"] == "disabled-on-host":
+                print(f"      · {name}: disabled-on-host — {record.get('reason', '')}")
         failures += not ok
 
 raise SystemExit(failures)

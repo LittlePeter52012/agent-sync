@@ -605,6 +605,10 @@ class AgentDoctorTests(unittest.TestCase):
                 REPO / "scripts" / "hub_manifest.py",
                 tool / "scripts" / "hub_manifest.py",
             )
+            shutil.copy2(
+                REPO / "scripts" / "host_policy.py",
+                tool / "scripts" / "host_policy.py",
+            )
             (tool / "tests" / "test_import.py").write_text(
                 "from scripts.capability_resolver import McpIdentity\n\n"
                 "class ImportTest:\n"

@@ -258,6 +258,35 @@ Environment variables:
 - `AGENT_HUB_ROOT` — private Hub path, default `~/.config/agent-hub`
 - `AGENT_SYNC_HOME` — tool installation path, normally auto-detected
 
+## Host-local policy
+
+Some decisions belong to one machine, not to the Hub. `~/.config/agent-sync/host-policy.json`
+can disable a Hub capability for chosen targets on that host only, for example when the Hub
+selects a product plugin the host does not have and the Hub MCP fallback is unwanted there.
+The file lives outside the Hub and the tool checkout, so it is never distributed and
+`agent-sync deploy` neither ships nor replaces it. See
+[`examples/host-policy.json`](examples/host-policy.json):
+
+```json
+{
+  "schema_version": 1,
+  "capability_ownership": {
+    "capabilities": {
+      "<capability>": {
+        "targets": {
+          "<target>": { "selection": "disabled", "reason": "<why>" }
+        }
+      }
+    }
+  }
+}
+```
+
+Only `"selection": "disabled"` is supported, `reason` is required, and every capability must
+exist in the Hub policy. Such targets resolve to `disabled-on-host` with the reason, which
+sync, verify and Doctor treat as satisfied. An invalid file stops `agent-sync sync` before
+anything changes.
+
 ## Related projects
 
 | Repository | Visibility | Role |

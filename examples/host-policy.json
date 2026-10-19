@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "capability_ownership": {
+    "capabilities": {
+      "example-capability": {
+        "targets": {
+          "codex": {
+            "selection": "disabled",
+            "reason": "The plugin the Hub selects is not installed on this host."
+          }
+        }
+      }
+    }
+  }
+}

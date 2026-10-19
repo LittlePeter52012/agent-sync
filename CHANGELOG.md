@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.14.0 — 2026-10-19
+
+- Add a host-local policy, `~/.config/agent-sync/host-policy.json`, that
+  disables a Hub capability for chosen targets on one machine only, for
+  example when the plugin the Hub selects is not installed there and the Hub
+  MCP fallback is unwanted. It lives outside the Hub and the tool, so it is
+  never distributed and `agent-sync deploy` does not touch it.
+- Such targets resolve to `disabled-on-host` with the stated reason; sync,
+  coverage, verify and Doctor treat them as satisfied.
+- The file is validated strictly; an invalid file fails `capability_resolver
+  validate`, so `agent-sync sync` stops before changing anything, and
+  `agent-sync verify` now checks the Hub and host policy explicitly.
+
 ## 1.13.0 — 2026-10-19
 
 - Give Hermes its own Skill target, `$HERMES_HOME/hub-skills`, instead of the

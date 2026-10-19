@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 try:
+    from scripts.host_policy import HostPolicyError, load_host_policy
     from scripts.hub_manifest import (
         ManifestError,
         read_target_exclusions,
@@ -31,6 +32,7 @@ try:
         normalize_plugin_id,
     )
 except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from host_policy import HostPolicyError, load_host_policy
     from hub_manifest import (
         ManifestError,
         read_target_exclusions,
@@ -404,6 +406,16 @@ def resolve_target_policy(
     if not isinstance(capabilities, dict):
         findings.append("capability_ownership.capabilities is invalid")
         capabilities = {}
+    # ~/.config/agent-sync/host-policy.json can disable a capability for a
+    # target on this host only; it is never part of the Hub or a deployment.
+    try:
+        host_overrides = load_host_policy(
+            resolved_home,
+            known_capabilities={str(name).casefold() for name in capabilities},
+        )
+    except HostPolicyError as error:
+        findings.append(str(error))
+        host_overrides = {}
     if isinstance(capabilities, dict):
         for raw_name, raw_capability in sorted(capabilities.items()):
             capability_name = str(raw_name).casefold()
@@ -474,6 +486,12 @@ def resolve_target_policy(
                 selection = "auto"
                 findings.append(f"{capability_name}: selection is invalid")
             selection = selection.casefold()
+            host_override = host_overrides.get(
+                (capability_name, target_name)
+            ) or host_overrides.get((capability_name, target_family))
+            if host_override is not None:
+                selection = host_override.selection
+                selection_source = "host-policy"
             official_plugins = _string_list(
                 target_capability.get("official_plugins", [])
             )
@@ -595,7 +613,10 @@ def resolve_target_policy(
                 desired_owner = "disabled"
                 capability_skills.update(valid_skills)
                 capability_mcp.update(valid_mcp)
-                if not active_officials:
+                if not active_officials and host_override is not None:
+                    state = "disabled-on-host"
+                    reason = f"disabled on this host: {host_override.reason}"
+                elif not active_officials:
                     state = "disabled-by-policy"
                     reason = "capability explicitly disabled"
                 else:
@@ -640,9 +661,10 @@ def resolve_target_policy(
                     f"{capability_name}: unsupported selection {selection}"
                 )
 
-            component_owner = (
-                effective_owner
-                or ("disabled" if state == "disabled-by-policy" else desired_owner)
+            component_owner = effective_owner or (
+                "disabled"
+                if state in {"disabled-by-policy", "disabled-on-host"}
+                else desired_owner
             )
             for name in capability_skills:
                 suppressed_skills.add(name)
@@ -773,6 +795,21 @@ def resolve_target_policy(
         findings=tuple(findings),
         uncertain=discovery.uncertain,
     )
+
+
+def host_policy_status(home: Path, hub: Path) -> tuple[int, str | None]:
+    """(number of host overrides, error message) without any plugin discovery."""
+    policy, _issue = _load_policy_json(hub.expanduser() / "policies" / "tool-scopes.json")
+    capabilities = _capability_contract(policy).get("capabilities", {})
+    known = (
+        {str(name).casefold() for name in capabilities}
+        if isinstance(capabilities, dict)
+        else set()
+    )
+    try:
+        return len(load_host_policy(home, known)), None
+    except HostPolicyError as error:
+        return 0, str(error)
 
 
 def main() -> int:
