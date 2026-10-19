@@ -198,7 +198,13 @@ else
 fi
 echo ""
 echo "[7] Idempotency"
-if "$SYNC_HOME/bin/agent-sync" all >/tmp/agent-sync-retest.log 2>&1; then ok "second agent-sync all"; else bad "second agent-sync all"; fi
+# A second `agent-sync all` distributes for real, so it only runs when asked
+# (agent-sync test --live, or AGENT_SYNC_TEST_LIVE=1); review comes first.
+if [ "${AGENT_SYNC_TEST_LIVE:-0}" = 1 ]; then
+  if "$SYNC_HOME/bin/agent-sync" all >/tmp/agent-sync-retest.log 2>&1; then ok "second agent-sync all"; else bad "second agent-sync all"; fi
+else
+  echo "  SKIP  second agent-sync all (live distribution; run 'agent-sync test --live' to include)"
+fi
 if "$SYNC_HOME/bin/agent-sync" verify >/dev/null 2>&1; then ok "verify still passes"; else bad "verify still passes"; fi
 
 echo ""

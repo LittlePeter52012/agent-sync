@@ -172,7 +172,7 @@ agent-sync sync --from TOOL
 | `agent-sync doctor [--runtime] [--strict] [--scope all\|managed]` | 诊断配置、能力归属与运行时健康 |
 | `agent-sync fix [--dry-run]` | 预览或执行有界、确定性的修复 |
 | `agent-sync all [--force]` | 完整同步 Skills + MCP + Rules，并执行受管理运行时门禁 |
-| `agent-sync test` | 运行 Python、语法、隐私和 Bash 评估测试 |
+| `agent-sync test [--live]` | 运行 Python、语法、隐私和 Bash 评估测试；`--live` 会额外真实执行一次 `agent-sync all` |
 | `agent-sync update [--check] [--hub] [--sync]` | 更新工具，并可选更新 Hub 和目标端 |
 | `agent-sync pull` / `push [-m MSG]` | 拉取私有 Hub，或经隐私检查后推送私有 Hub |
 

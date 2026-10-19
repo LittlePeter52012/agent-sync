@@ -60,7 +60,7 @@ Commands:
   list               Show whitelist and coverage matrix
   verify [--strict [--scope all|managed]]
                      Structural checks; strict also runs runtime doctor
-  test               Full evaluation suite
+  test [--live]      Full evaluation suite (--live adds a real second `all` run)
   status             Status overview
   doctor [--json] [--runtime] [--strict] [--scope all|managed]
                      Local capability, configuration, and runtime health report
@@ -240,6 +240,11 @@ case "$cmd" in
         ;;
     test)
         require_hub
+        case "${1:-}" in
+            "") ;;
+            --live) export AGENT_SYNC_TEST_LIVE=1 ;;
+            *) echo "Unknown test option: $1" >&2; usage 1 ;;
+        esac
         echo "[test 1/4] Python unittest suite"
         PYTHONPATH="$AGENT_SYNC_HOME${PYTHONPATH:+:$PYTHONPATH}" \
             python3 -m unittest discover -s "$AGENT_SYNC_HOME/tests" -v

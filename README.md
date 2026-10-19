@@ -182,7 +182,7 @@ agent-sync sync --from TOOL
 | `agent-sync doctor [--runtime] [--strict] [--scope all\|managed]` | Diagnose configuration, ownership, and runtime health |
 | `agent-sync fix [--dry-run]` | Preview or apply bounded deterministic repairs |
 | `agent-sync all [--force]` | Full Skills + MCP + Rules sync and managed runtime gate |
-| `agent-sync test` | Run Python, syntax, privacy, and Bash evaluation suites |
+| `agent-sync test [--live]` | Run Python, syntax, privacy, and Bash evaluation suites; `--live` also runs a real second `agent-sync all` |
 | `agent-sync update [--check] [--hub] [--sync]` | Update the tool and optionally the Hub and targets |
 | `agent-sync pull` / `push [-m MSG]` | Pull or privacy-check and push the private Hub |
 
