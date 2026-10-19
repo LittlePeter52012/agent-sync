@@ -47,6 +47,39 @@ remove_suppressed_hub_link() {
     fi
 }
 
+remove_unlisted_hub_links() {
+    # A skill dropped from the manifest keeps its old Hub link in every tool
+    # unless we prune it; only links that resolve to the Hub copy are removed.
+    local target_dir="$1" listed_file="$2" dest skill_name
+    for dest in "$target_dir"/*; do
+        [ -L "$dest" ] || continue
+        skill_name="${dest##*/}"
+        grep -Fqx "$skill_name" "$listed_file" && continue
+        skill_is_hub_managed "$dest" "$SOURCE_DIR/$skill_name" || continue
+        [ "$DRY_RUN" = false ] && rm "$dest"
+        log "  − $skill_name @ ${target_dir##*/} (no longer in manifest)"
+    done
+}
+
+link_points_into_hub() {
+    # True when the link (even a dangling one) targets something under the Hub.
+    "$PY" - "$1" "$HUB_ROOT" <<'PY'
+import os
+import sys
+
+link, hub = sys.argv[1:3]
+hub_real = os.path.realpath(hub)
+raw = os.readlink(link)
+if not os.path.isabs(raw):
+    raw = os.path.join(os.path.dirname(link), raw)
+candidates = {os.path.realpath(link), os.path.normpath(raw)}
+roots = {hub_real, os.path.normpath(hub)}
+raise SystemExit(
+    0 if any(c == r or c.startswith(r + os.sep) for c in candidates for r in roots) else 1
+)
+PY
+}
+
 backup_existing_dest() {
     local dest="$1" skill_name="$2" target_dir="$3"
     local target_key backup_dir
@@ -76,8 +109,15 @@ link_skill() {
             log "  ✓ $skill_name @ ${target_dir##*/}"
             return
         fi
-        [ "$DRY_RUN" = false ] && { rm "$dest"; ln -s "$source" "$dest"; }
-        log "  ↻ $skill_name @ ${target_dir##*/}"
+        if link_points_into_hub "$dest"; then
+            [ "$DRY_RUN" = false ] && { rm "$dest"; ln -s "$source" "$dest"; }
+            log "  ↻ $skill_name @ ${target_dir##*/}"
+        else
+            # A link the user pointed elsewhere is kept, like a directory is.
+            backup_existing_dest "$dest" "$skill_name" "$target_dir"
+            [ "$DRY_RUN" = false ] && ln -s "$source" "$dest"
+            log "  ⚠ replaced foreign symlink → Hub $skill_name"
+        fi
     elif [ -d "$dest" ]; then
         if [ "$FORCE" = true ]; then
             backup_existing_dest "$dest" "$skill_name" "$target_dir"
@@ -130,6 +170,8 @@ fi
 
 SUPPRESSED_ROOT=$(mktemp -d)
 trap 'rm -rf "$SUPPRESSED_ROOT"' EXIT
+LISTED_FILE="$SUPPRESSED_ROOT/.listed"
+printf '%s\n' "${SKILLS[@]}" > "$LISTED_FILE"
 
 echo "━━━ agent-sync skills ($METHOD) ━━━"
 echo "  Hub: $SOURCE_DIR"
@@ -139,7 +181,7 @@ echo ""
 while IFS='|' read -r target_key target_label target_dir; do
     [ -n "$target_dir" ] || continue
     log "→ $target_dir"
-    mkdir -p "$target_dir"
+    [ "$DRY_RUN" = false ] && mkdir -p "$target_dir"
     suppressed_file="$SUPPRESSED_ROOT/${target_key//:/_}"
     "$PY" "$SCRIPT_DIR/capability_resolver.py" \
         --home "$HOME" \
@@ -154,6 +196,7 @@ while IFS='|' read -r target_key target_label target_dir; do
             link_skill "$skill" "$target_dir"
         fi
     done
+    remove_unlisted_hub_links "$target_dir" "$LISTED_FILE"
     echo ""
 done < <(skill_target_specs)
 
